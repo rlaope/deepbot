@@ -1,0 +1,79 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# deepbot-harness profile patch — the agent's brain.
+#
+# Layer order (see profile/package.json):
+#   dsh-base                        sessions, tools, skills, storage, goals, sandbox
+#   dsh-web-app                     the host surface: HTTP server, session controller
+#   dsh-experimental-schedule-bundle  durable reminders + time context
+#   deepbot-harness                 the Slack platform adapter (this repo)
+#
+# This file is the user patch layer: it is applied after every bundle, so the
+# last write wins per row, and `config` is REPLACED wholesale (there is no deep
+# merge). Copy it to `$DSH_HOME/profiles/<name>/cordis.patch.yml`.
+# ─────────────────────────────────────────────────────────────────────────────
+
+# ── Model route ──────────────────────────────────────────────────────────────
+# dsh-base already defaults `agent-default-model` to the official DeepSeek route
+# ("deepseek-official"), which reads DEEPSEEK_API_KEY from the credentials
+# service. That is the simplest setup, so nothing is overridden here.
+#
+# To route through an OpenAI-compatible gateway instead, uncomment the block
+# below, point it at your endpoint, and add an `agent-default-model` override
+# that names the same provider id.
+#
+# - id: llm-pi-ai
+#   config:
+#     providers:
+#       gateway:
+#         displayName: My Gateway
+#         apiKeyEnv: GATEWAY_API_KEY        # resolved through ctx.credentials
+#         api: openai-completions
+#         baseURL: https://your-gateway.example/v1
+#         models:
+#           - id: vendor/model-name
+#             name: My Model
+#             contextWindow: 200000
+#
+# - id: agent-default-model
+#   config:
+#     provider: gateway
+#     model: vendor/model-name
+#     reasoningEffort: medium
+
+# ── Memory switch: cross-session search ──────────────────────────────────────
+# dsh-base ships this row as `path: ':memory:'` with `openAt: never`, i.e.
+# full-text search over past sessions is OFF. This is the single change that
+# turns the session log into something the agent can actually remember with.
+#
+# The index is a derived database, separate from the session log itself. It has
+# exactly one owning process per path, so do not point two running gateways at
+# the same file.
+- id: session-query-sqlite
+  config:
+    path: !!js dshHomePath('session-index.db')
+    openAt: startup
+    journalMode: wal
+    defaultLimit: 20
+    maxLimit: 100
+
+# ── Memory: declarative instructions ─────────────────────────────────────────
+# AGENTS.md is read from the session working directory and its ancestors. Point
+# the gateway at a home directory and put the agent's identity there (see
+# agent/AGENTS.md in this repo).
+- id: agent-instructions
+  config:
+    maxBytes: 131072
+
+# ── Memory: procedural (skills) ──────────────────────────────────────────────
+# Nothing to configure: the filesystem skill provider already scans, in rank
+# order, <project>/.dsh/skills, <project>/.agents/skills, $DSH_HOME/skills and
+# ~/.agents/skills, and watches them for changes. Drop a SKILL.md (or a flat
+# <name>.md) into one of those and the agent can load it by name.
+#
+# Add extra roots with:
+# - id: skill-filesystem
+#   config:
+#     customSkillDirs:
+#       - /absolute/path/to/skills
+#     includeDefaultRoots: true
+#     watch: true

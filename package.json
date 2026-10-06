@@ -1,0 +1,31 @@
+{
+  "name": "deepbot-harness",
+  "version": "0.1.0",
+  "description": "A standalone, always-on agent built on DeepSeek Harness. Slack Socket Mode platform adapter + durable sessions + a memory-ready gateway profile.",
+  "type": "module",
+  "license": "MIT",
+  "exports": {
+    ".": "./index.js",
+    "./package.json": "./package.json"
+  },
+  "files": ["index.js", "cordis.patch.yml", "profile", "agent", "service", "docs"],
+  "keywords": [
+    "deepseek",
+    "deepseek-harness",
+    "dsh",
+    "agent",
+    "slack",
+    "socket-mode",
+    "cordis",
+    "llm",
+    "personal-agent"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/rlaope/deepbot-harness.git"
+  },
+  "engines": { "node": ">=22" },
+  "dsh": {
+    "bundle": { "patch": "./cordis.patch.yml" }
+  }
+}

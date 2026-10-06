@@ -1,0 +1,7 @@
+node_modules/
+state/
+slack-state/
+*.log
+.env
+.env.*
+.DS_Store

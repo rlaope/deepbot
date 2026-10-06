@@ -1,0 +1,36 @@
+# Bundle patch for deepbot-harness: one insert over an empty profile root.
+#
+# The row-level `inject` list controls activation order. Resume is a first-class
+# path here, so the adapter explicitly waits for sessionQuery and
+# sessionPersistence rather than relying on declaration order.
+#
+# targetChannels must be filled in. An empty list makes the plugin refuse to
+# start, which is deliberate: a misconfigured bot should not answer everywhere.
+#
+#   explicit ids:           targetChannels: ['C0123456789', 'D0987654321']
+#   every invited channel:  targetChannels: ['*']
+#
+# replyMode: 'mention' answers @-mentions in channels (DMs are always answered);
+# 'all' answers every human message in the allowed channels.
+- insert:
+    - id: platform-slack
+      name: 'deepbot-harness'
+      inject:
+        - agents
+        - sessions
+        - agentDefaultModel
+        - credentials
+        - sessionQuery
+        - sessionPersistence
+      config:
+        targetChannels:
+          - C_REPLACE_ME
+        replyMode: mention
+        stateDir: !!js dshHomePath('slack-state')
+        maxConcurrency: 2
+        # botTokenRef / appTokenRef default to SLACK_BOT_TOKEN / SLACK_APP_TOKEN
+        # and are resolved through the harness credential service.
+        #
+        # Diagnostic that never touches Slack — exercises session create and
+        # resume inside the gateway:
+        # selfTest: "Say hello in one line."
