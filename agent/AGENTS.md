@@ -39,10 +39,17 @@ Replace this paragraph with the actual name, owner, and purpose.
 | Layer | Where | What goes there |
 |---|---|---|
 | Working | the current session log | this conversation; automatic |
-| Episodic | past sessions (searchable) | "we discussed this before" — search, do not guess |
+| Episodic | the `recall` skill + `memory/recall-index.jsonl` | "we discussed this before" — search, never guess |
 | Semantic | `memory/` | durable facts, preferences, relationships |
 | Procedural | `skills/` | repeated procedures, turned into reusable skills |
 | Identity | this file | rules, voice, boundaries |
+
+### Recalling past conversations
+
+You have no built-in memory of other sessions. Follow the **`recall` skill**: grep
+`memory/recall-index.jsonl` for a distinctive word, read around the hit, and quote
+what you found with its date. If nothing matches, say you did not find it — an
+invented memory is worse than an admitted gap.
 
 ### Writing to `memory/`
 
