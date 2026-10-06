@@ -18,11 +18,17 @@ decision with a cost.
 
 ## Verified partially, or not at all
 
-- **Cross-session FTS recall.** The index is configured to open at startup and the
-  row is present, but the derived index reconciles lazily. Opened directly after a
-  session-creating boot it reported **0 indexed sessions**, so recall has *not*
-  been demonstrated. This is the highest-value thing to check against real
-  history — see "Verifying recall" below.
+- **Cross-session recall does not exist.** Diagnosed, not merely unverified:
+  - the session logs are present (one zstd-compressed `session.v4.jsonl.zstd` per
+    session, bucketed by working directory);
+  - the FTS index opens but holds **0 rows**;
+  - the shipped model-facing tool set contains **no session search**, and the
+    query service's consumers (the web client, the `@session` reference source)
+    are both UI-driven.
+
+  So the index is a substrate with no consumer in the agent plane. Recall has to
+  be built: a plugin that queries `ctx.sessionQuery` and either exposes it as a
+  tool or injects bounded hits before a turn. Configuration cannot fix this.
 - **Duplicate-event suppression.** The rule is implemented and the code path was
   exercised, but no real Slack redelivery was observed, so the end-to-end path is
   untested.

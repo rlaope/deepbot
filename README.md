@@ -34,7 +34,7 @@ No process is spawned per message: the adapter drives the gateway's already-runn
 | Slack Socket Mode receive/reply, threads, chunking | ✅ verified |
 | Duplicate-event suppression, reconnect with backoff | ✅ implemented (dup path unit-checked) |
 | Live one-to-one replacement of a production bot | ✅ done once, end to end |
-| Cross-session **FTS recall** | ⚠️ configured, **not verified** — see [docs/limitations.md](docs/limitations.md) |
+| Cross-session **recall** | ❌ **not implemented** — the harness ships the search service but no consumer in the agent plane. See [docs/limitations.md](docs/limitations.md) |
 | Attachments / images from Slack | ❌ not implemented |
 | Streaming progress into Slack | ❌ posts the finished turn only |
 
@@ -166,16 +166,25 @@ it does not turn on by default:
 | Layer | Mechanism | Included here |
 |---|---|---|
 | Working | the session itself + compaction | via `dsh-base` |
-| Episodic | SQLite FTS5 over past sessions | **the switch this repo flips** |
+| Episodic | SQLite FTS5 over past sessions | substrate only — the index is opened here, but **nothing queries it on the agent's behalf yet** |
 | Semantic | `memory/` files in the agent home | convention, see `agent/AGENTS.md` |
 | Procedural | `SKILL.md` bundles, watched and reloaded | via `dsh-base` |
 | Identity | `AGENTS.md` chain | via `dsh-base` |
 
-The one-line version: `dsh-base` ships session search *off*
-(`path: ':memory:'`, `openAt: never`). `profile/cordis.patch.yml` opens it on a
-real file at startup. That single change is what makes "remember last week"
-possible at all — and it is also the part still marked unverified above, because
-the index is rebuilt lazily and should be checked against your own history.
+Two separate things have to be true before the agent can remember, and only the
+first one is a configuration change:
+
+1. **Substrate.** `dsh-base` ships session search *off* (`path: ':memory:'`,
+   `openAt: never`). `profile/cordis.patch.yml` opens it on a real file at
+   startup.
+2. **A consumer.** The search service is consumed by the web UI and by the
+   `@session` reference source, both of which are UI-driven. The agent plane gets
+   **no tool and no injected context** from it — a grep of the shipped tool set
+   finds nothing session-related.
+
+So opening the index is necessary but not sufficient. Until a recall plugin exists
+(see [docs/limitations.md](docs/limitations.md)), threads remember their own
+history and nothing else.
 
 ## Layout
 
