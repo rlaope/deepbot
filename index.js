@@ -1,5 +1,5 @@
 /**
- * deepbot-harness — a Slack Socket Mode platform adapter that runs *inside* a
+ * deepbot — a Slack Socket Mode platform adapter that runs *inside* a
  * DeepSeek Harness gateway.
  *
  * It takes over the "messaging platform <-> agent" role without spawning a
@@ -48,7 +48,7 @@ import { randomUUID } from 'node:crypto'
 import { appendFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 
-export const name = 'platform-slack'
+export const name = 'deepbot'
 
 // Activate only after these services exist. dsh-base provides all of them.
 export const inject = [
@@ -86,7 +86,7 @@ export function apply(ctx, config) {
     problems.push('targetChannels: at least one channel ID is required (this guard prevents answering everywhere)')
   }
   if (!['mention', 'all'].includes(cfg.replyMode)) problems.push(`replyMode: must be 'mention' or 'all' (got: ${String(cfg.replyMode)})`)
-  if (problems.length > 0) throw new Error(`platform-slack config error:\n  - ${problems.join('\n  - ')}`)
+  if (problems.length > 0) throw new Error(`deepbot config error:\n  - ${problems.join('\n  - ')}`)
 
   const targetChannels = cfg.targetChannels.map((c) => c.trim()).filter(Boolean)
   // '*' means "every channel the bot has been invited to".
@@ -96,14 +96,14 @@ export function apply(ctx, config) {
 
   const stateDir = cfg.stateDir ?? join(process.cwd(), 'slack-state')
   mkdirSync(stateDir, { recursive: true })
-  const LOG = join(stateDir, 'platform-slack.log')
+  const LOG = join(stateDir, 'deepbot.log')
   const STATE = join(stateDir, 'sessions.json')
 
   const log = (...parts) => {
     const line = `${new Date().toISOString()} ${parts.map((p) => (typeof p === 'string' ? p : JSON.stringify(p))).join(' ')}`
       .replace(/xox[baprs]-[A-Za-z0-9-]+/g, '<REDACTED>')
       .replace(/xapp-[A-Za-z0-9-]+/g, '<REDACTED>')
-    ctx.logger?.info?.(line) ?? console.log(`[platform-slack] ${line}`)
+    ctx.logger?.info?.(line) ?? console.log(`[deepbot] ${line}`)
     try { appendFileSync(LOG, line + '\n') } catch { /* never die because logging failed */ }
   }
 
@@ -203,7 +203,7 @@ export function apply(ctx, config) {
     const agents = ctx.get('agents')
     const sessions = ctx.get('sessions')
     const defaultModel = ctx.get('agentDefaultModel')
-    if (!agents || !sessions || !defaultModel) throw new Error('platform-slack: agents/sessions/agentDefaultModel missing')
+    if (!agents || !sessions || !defaultModel) throw new Error('deepbot: agents/sessions/agentDefaultModel missing')
 
     // The same selection is used for create and resume.
     const selection = defaultModel.currentSelection()
@@ -228,7 +228,7 @@ export function apply(ctx, config) {
       handle = await agents.create({ sessionId, meta: { cwd }, agentOptions, setup })
     }
     const agent = handle?.agent
-    if (!agent?.followup || !agent?.whenIdle) throw new Error('platform-slack: agents.create/resume did not return an Agent')
+    if (!agent?.followup || !agent?.whenIdle) throw new Error('deepbot: agents.create/resume did not return an Agent')
 
     try {
       await agent.whenIdle()
@@ -444,11 +444,11 @@ export function apply(ctx, config) {
 
     botToken = await credential(cfg.botTokenRef)
     appToken = await credential(cfg.appTokenRef)
-    if (!botToken) throw new Error(`platform-slack: credential ${cfg.botTokenRef} not found`)
-    if (!appToken) throw new Error(`platform-slack: credential ${cfg.appTokenRef} not found`)
+    if (!botToken) throw new Error(`deepbot: credential ${cfg.botTokenRef} not found`)
+    if (!appToken) throw new Error(`deepbot: credential ${cfg.appTokenRef} not found`)
 
     const me = await slackGet(botToken, 'auth.test')
-    if (!me.ok) throw new Error(`platform-slack: auth.test failed (${me.error}) — check the bot token`)
+    if (!me.ok) throw new Error(`deepbot: auth.test failed (${me.error}) — check the bot token`)
 
     const cwd = await sessionCwd()
     log(`starting — bot=@${me.user} team=${me.team} channels=${targetChannels.join(',')} mode=${cfg.replyMode}`)
@@ -465,5 +465,5 @@ export function apply(ctx, config) {
       try { ws?.close() } catch { /* ignore */ }
       log('plugin unloading — socket closed')
     }
-  }, 'platform-slack: socket-mode')
+  }, 'deepbot: socket-mode')
 }

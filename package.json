@@ -1,5 +1,5 @@
 {
-  "name": "deepbot-harness",
+  "name": "deepbot",
   "version": "0.1.0",
   "description": "A standalone, always-on agent built on DeepSeek Harness. Slack Socket Mode platform adapter + durable sessions + a memory-ready gateway profile.",
   "type": "module",
@@ -22,7 +22,7 @@
   ],
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/rlaope/deepbot-harness.git"
+    "url": "git+https://github.com/rlaope/deepbot.git"
   },
   "engines": { "node": ">=22" },
   "dsh": {

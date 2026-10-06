@@ -1,5 +1,5 @@
 {
-  "name": "deepbot-harness-profile",
+  "name": "deepbot-profile",
   "private": true,
   "dependencies": {},
   "dsh": {
@@ -8,7 +8,7 @@
         "@deepseek-ai/dsh-base",
         "@deepseek-ai/dsh-web-app",
         "@deepseek-ai/dsh-experimental-schedule-bundle",
-        "deepbot-harness"
+        "deepbot"
       ]
     }
   }

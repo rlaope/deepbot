@@ -1,11 +1,11 @@
 # ─────────────────────────────────────────────────────────────────────────────
-# deepbot-harness profile patch — the agent's brain.
+# deepbot profile patch — the agent's brain.
 #
 # Layer order (see profile/package.json):
 #   dsh-base                        sessions, tools, skills, storage, goals, sandbox
 #   dsh-web-app                     the host surface: HTTP server, session controller
 #   dsh-experimental-schedule-bundle  durable reminders + time context
-#   deepbot-harness                 the Slack platform adapter (this repo)
+#   deepbot                 the Slack platform adapter (this repo)
 #
 # This file is the user patch layer: it is applied after every bundle, so the
 # last write wins per row, and `config` is REPLACED wholesale (there is no deep

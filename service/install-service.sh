@@ -21,7 +21,7 @@ set -uo pipefail
 cd "$(dirname "$0")"
 DIR="$(pwd)"
 
-LABEL="ai.deepbot-harness.gateway"
+LABEL="ai.deepbot.gateway"
 UID_N="$(id -u)"
 PLIST="$HOME/Library/LaunchAgents/$LABEL.plist"
 
@@ -41,7 +41,7 @@ case "${1:-}" in
   fi
   curl -s -o /dev/null -w "   http://127.0.0.1:$PORT -> HTTP %{http_code} (401 = up, auth required)\n" --max-time 4 "http://127.0.0.1:$PORT" || echo "   port $PORT closed"
   echo "── plugin log"
-  tail -8 "$HOME/.dsh/slack-state/platform-slack.log" 2>/dev/null | sed 's/^/   /' || echo "   (no log yet)"
+  tail -8 "$HOME/.dsh/slack-state/deepbot.log" 2>/dev/null | sed 's/^/   /' || echo "   (no log yet)"
   exit 0
   ;;
 --uninstall)
@@ -53,7 +53,7 @@ case "${1:-}" in
   ;;
 esac
 
-echo "=== installing deepbot-harness gateway service ==="
+echo "=== installing deepbot gateway service ==="
 [ -x "$DSH_BIN" ] || { echo "❌ dsh not found: $DSH_BIN (set DSH_BIN)"; exit 1; }
 
 # 1) runtime copy, outside TCC-protected folders
@@ -105,7 +105,7 @@ echo "── verify"
 launchctl print "gui/$UID_N/$LABEL" >/dev/null 2>&1 && launchctl print "gui/$UID_N/$LABEL" | grep -E "^\s+(state|pid) " | sed 's/^/   /' || { echo "   ❌ not registered"; exit 1; }
 curl -s -o /dev/null -w "   http://127.0.0.1:$PORT -> HTTP %{http_code}\n" --max-time 5 "http://127.0.0.1:$PORT" || true
 
-if tail -30 "$HOME/.dsh/slack-state/platform-slack.log" 2>/dev/null | grep -q "Socket Mode connected"; then
+if tail -30 "$HOME/.dsh/slack-state/deepbot.log" 2>/dev/null | grep -q "Socket Mode connected"; then
   echo "   ✅ Slack connected"
 else
   echo "   ⚠️  no 'Socket Mode connected' yet — check:"
@@ -118,7 +118,7 @@ cat <<EOF
  installed. the gateway now starts at login and restarts on exit.
 
    status:   ./install-service.sh --status
-   logs:     tail -f $HOME/.dsh/slack-state/platform-slack.log
+   logs:     tail -f $HOME/.dsh/slack-state/deepbot.log
    out/err:  $AGENT_HOME/state/gateway.{out,err}.log
    stop:     launchctl bootout gui/$UID_N/$LABEL
    remove:   ./install-service.sh --uninstall

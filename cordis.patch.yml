@@ -1,4 +1,4 @@
-# Bundle patch for deepbot-harness: one insert over an empty profile root.
+# Bundle patch for deepbot: one insert over an empty profile root.
 #
 # The row-level `inject` list controls activation order. Resume is a first-class
 # path here, so the adapter explicitly waits for sessionQuery and
@@ -13,8 +13,8 @@
 # replyMode: 'mention' answers @-mentions in channels (DMs are always answered);
 # 'all' answers every human message in the allowed channels.
 - insert:
-    - id: platform-slack
-      name: 'deepbot-harness'
+    - id: deepbot
+      name: 'deepbot'
       inject:
         - agents
         - sessions

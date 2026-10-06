@@ -1,4 +1,4 @@
-# deepbot-harness
+# deepbot
 
 **A standalone, always-on agent built on [DeepSeek Harness](https://github.com/deepseek-ai).**
 The harness ships the runtime; this is the *agent edition* of it — a long-running
@@ -9,7 +9,7 @@ conversations, and can speak first.
                         ┌──────────────────────────────────────────┐
    Slack  ──Socket Mode──▶  DSH gateway process                    │
                         │                                          │
-                        │  platform-slack  (this repo, index.js)   │
+                        │  deepbot  (this repo, index.js)   │
                         │      │  agents.create / agents.resume    │
                         │      ▼                                   │
                         │  agents  ──▶  session log (event-sourced)│
@@ -90,7 +90,7 @@ cp -r profile "$DSH_HOME/profiles/agent"       # $DSH_HOME defaults to ~/.dsh
 #    and register the bundles in a fresh profile package.json if you renamed it
 
 # 2) install this repo as a bundle into that profile
-dsh plugin --profile agent add /absolute/path/to/deepbot-harness
+dsh plugin --profile agent add /absolute/path/to/deepbot
 
 # 3) provide credentials (chosen by the credential service, never by this code)
 cat >> "$DSH_HOME/.env" <<'EOF'
@@ -100,7 +100,7 @@ EOF
 chmod 600 "$DSH_HOME/.env"
 
 # 4) set the channels this agent may answer in
-$EDITOR /absolute/path/to/deepbot-harness/cordis.patch.yml   # targetChannels
+$EDITOR /absolute/path/to/deepbot/cordis.patch.yml   # targetChannels
 
 # 5) run it
 dsh --profile agent --port 19500 --no-open
@@ -129,7 +129,7 @@ without opening a socket. Use it to verify the profile before wiring Slack:
         selfTest: "Say hello in one line."
 ```
 
-Boot the profile and read `$DSH_HOME/slack-state/platform-slack.log`:
+Boot the profile and read `$DSH_HOME/slack-state/deepbot.log`:
 
 ```
 selfTest turn 1: reason=completed session=slack-… text="Hello!"
