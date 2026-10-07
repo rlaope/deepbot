@@ -26,6 +26,15 @@ No process is spawned per message: the adapter drives the gateway's already-runn
 
 ---
 
+## Direction
+
+- **[SPEC.md](SPEC.md)** — what this is, who it is for, and what it must never do.
+- **[PLAN.md](PLAN.md)** — milestones in dependency order, each with acceptance
+  criteria, and the working rules that keep this from becoming a loop of manual
+  testing and symptom patching.
+
+Both are drafts until their open decisions are answered.
+
 ## Status: early, and honest about it
 
 | Area | State |

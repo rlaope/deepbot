@@ -1,0 +1,167 @@
+# deepbot — plan
+
+Companion to [SPEC.md](SPEC.md). Milestones are ordered by dependency, not by
+enthusiasm: nothing is built before the thing it stands on.
+
+## Working rules
+
+These exist because the first few days were a loop of *owner tests by hand → a
+symptom appears → patch → owner tests again*. That loop is expensive for the
+owner and hides design problems.
+
+1. **Definition before code.** Each milestone below states its acceptance
+   criteria first. A change that does not serve a criterion does not ship.
+2. **The owner tests at milestone boundaries, not per fix.** Between boundaries
+   the work is verified by tests.
+3. **Automate the verification before doing the work.** M1 exists for exactly
+   this reason and comes before the feature work it enables.
+4. **A fix requires a regression test** when it fixes something that was observed
+   failing (the reconnect loop has one; incidents get one).
+5. **Say what is unverified.** The README and SPEC carry explicit "not verified"
+   markers, and they are updated in the same commit that changes the claim.
+6. **Production stays up.** The live instance is a company Slack bot. Changes are
+   applied by restarting a supervised service with an auto-rollback, and every
+   milestone must leave it working.
+
+---
+
+## M0 — Presence and instructions ✅ done
+
+**Goal:** a supervised agent that answers in Slack and knows its own instructions.
+
+- Socket Mode adapter, `channel:thread → sessionId`, chunked replies, dedupe.
+- launchd service: auto-start, restart on exit, TCC-safe runtime path.
+- Reconnect forever + watchdog; startup also retries. Regression-tested.
+- Instruction injection from `AGENTS.md` / `CLAUDE.md` / `memory/*.md`.
+
+**Evidence:** 608 ms round trip; correct recall of an 18-hour-old message across
+three process restarts; 5/5 on `test/reconnect.test.mjs`; measured injection of
+2469 chars where the system prompt previously carried none of it.
+
+---
+
+## M1 — A test harness for the agent path ⬅ **next**
+
+**Goal:** stop verifying memory by hand. Nothing in M2 is trustworthy until this
+exists.
+
+**Design:** reuse the path that is already verified. Extend the plugin's
+diagnostic mode from a single prompt to a **scenario file**:
+
+```json
+{
+  "stateDir": ".test/state",
+  "turns": [
+    { "session": "A", "say": "내가 좋아하는 음식은 국밥이야" },
+    { "session": "B", "say": "내가 좋아하는 음식이 뭐였지?", "expectContains": "국밥" },
+    { "session": "B", "say": "내가 싫어하는 음식이 뭐였지?", "expectNotContains": "국밥" }
+  ]
+}
+```
+
+It runs real turns against the real services in a **separate profile**
+(`agent-test`) with its own state dir and its own FTS index path, so it can run
+while the live gateway is up.
+
+**Acceptance criteria:**
+- `node test/run-scenario.mjs test/scenarios/recall.json` exits non-zero when an
+  expectation fails, zero when it passes, and prints each turn's answer.
+- The scenario above passes end-to-end **including the host-side index rebuild
+  step**, which is currently missing from the loop.
+- The same runner can restart the plugin mid-scenario to test continuity.
+- CI-able locally: one command, no manual Slack poking.
+
+**Risks:** the test profile must not collide with the live one (index ownership,
+ports, session store bucket).
+
+---
+
+## M2 — Memory that actually works
+
+**Goal:** SPEC S1 and S2. This is the reason the project exists.
+
+**Work, in order:**
+1. **Write path.** The agent must *save* facts: `memory/*.md`, one dated fact per
+   line. Instructions exist; nothing enforces or verifies them. Add a curator
+   pass (a scheduled turn that reviews recent conversations and updates notes)
+   rather than relying on the agent to remember to write.
+2. **Read path.** Make recall demonstrably work: index freshness immediately
+   after a turn (not up to 10 minutes later), and a scripted assertion that a
+   fact from session A is found from session B.
+3. **Recall quality.** Keyword search first, then evaluate. If keyword misses
+   paraphrases in practice, add an embedding index — a decision to make with
+   evidence, not now.
+4. **Decide recall delivery** (SPEC §5): automatic injection vs agent-initiated.
+
+**Acceptance criteria:**
+- S1: a scripted test states a fact in one thread and recalls it in another.
+- S2: a question about something never stated returns "not found", with no
+  invention (adversarial scenario, run with the fact absent).
+- Notes written to `memory/` are injected on the *next* turn without a restart.
+- No secret ever reaches `memory/` or the log (S5 scan in the test suite).
+
+---
+
+## M3 — Never silently dead
+
+**Goal:** SPEC S3. The outage that motivated this went unnoticed for 57 minutes.
+
+- A health probe that distinguishes *running* from *connected*, checking the
+  plugin's own state rather than the process.
+- On failure: restart the service; if it fails again, tell the owner in Slack or
+  another channel.
+- A forced-disconnect test (block the socket, assert recovery and alert).
+
+**Acceptance criteria:** deliberate test that kills connectivity recovers within
+one probe interval and produces one alert, not a storm of them.
+
+---
+
+## M4 — Autonomy
+
+**Goal:** SPEC G4, inside the boundary in SPEC §7.
+
+- Scheduled reminders delivered into the original conversation.
+- A "watch this and tell me when it changes" primitive.
+- Long objectives that survive restarts.
+- Every autonomous action is logged, and the owner can see what it did and why.
+
+**Depends on:** M2 (an agent that acts but cannot remember why is a nuisance).
+
+---
+
+## M5 — Distribution
+
+**Goal:** SPEC S6. Only if SPEC's open decision 6 says this is a real project.
+
+- Fresh-clone install from the README, verified on a clean machine or user.
+- Config entirely in the profile, no machine-specific paths in the repo.
+- Version pinning against the harness, plus a documented upgrade procedure for
+  the non-public APIs the plugin relies on.
+
+---
+
+## M6 — Beyond Slack
+
+Only if a second platform is actually wanted. Discord and Telegram are new
+adapters of the same shape, not a refactor — the adapter is already isolated.
+
+---
+
+## Sequencing summary
+
+```
+M0 presence ✅ ──▶ M1 test harness ──▶ M2 memory ──▶ M4 autonomy
+                                        │
+M3 health (independent, small) ─────────┘
+M5 distribution ── after M2 proves the value
+```
+
+## What we are deliberately not doing now
+
+- Multi-platform, before memory works.
+- Browser automation or vision.
+- Semantic search, before keyword recall is measured.
+- Attaching a workspace to sessions (the proper fix for instruction injection) —
+  it removes the workaround, but it needs API work whose payoff is currently
+  cosmetic. Revisit when touching session creation for another reason.
