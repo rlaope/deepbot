@@ -1,0 +1,13 @@
+{
+  "_comment": "Host-authored watches. The agent can also create its own as <agent home>/watches/*.json. The FIRST observation only records a baseline — it never alerts.",
+  "watches": [
+    {
+      "id": "disk-free",
+      "name": "free space on /",
+      "command": "df -h / | tail -1 | awk '{print $4}'",
+      "intervalSeconds": 300,
+      "channel": "U0BCYNNL324",
+      "rateLimitMinutes": 60
+    }
+  ]
+}

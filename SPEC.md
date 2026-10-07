@@ -67,9 +67,9 @@ in the harness; the **state** column is honest about what works today.
 | Layer | Mechanism | What belongs there | State |
 |---|---|---|---|
 | Working | the session log (event-sourced, per thread) | this conversation | ✅ works |
-| Episodic | `memory/recall-index.jsonl`, built host-side from the session store, greppable | "we discussed this before" | ⚠️ built and populated, **not yet demonstrated end-to-end** |
-| Semantic | `memory/*.md`, injected into every turn | durable facts, preferences, decisions | ⚠️ injection works; **nothing writes these files yet** |
-| Procedural | `skills/<name>/SKILL.md` | repeated procedures | ⚠️ files are discovered, but the catalog is **not surfaced** in this composition |
+| Episodic | `memory/recall-index.jsonl`, built host-side from the session store, greppable | "we discussed this before" | ✅ demonstrated end to end (S1, S2) |
+| Semantic | `memory/*.md`, injected into every turn | durable facts, preferences, decisions | ✅ the agent writes dated facts and they are injected on the next turn |
+| Procedural | `skills/<name>/SKILL.md` | repeated procedures | ✅ the profile re-enables `skill-filesystem` and `tool-skill`, which the web bundle disables |
 | Identity | `AGENTS.md`, injected into every turn | rules, voice, boundaries | ✅ works (since the injection fix) |
 
 ### Memory rules (proposed)
@@ -99,7 +99,7 @@ Requirements that came directly from a real outage:
 - **R2** — a failed *retry* also retries (the original bug). ✅ done
 - **R3** — a socket that goes quiet without a close event is detected. ✅ watchdog
 - **R4** — **an external health check that alerts.** A process that is running but
-  disconnected must not look healthy. ❌ not built
+  disconnected must not look healthy. ✅ built and verified end to end
 - **R5** — a process restart must not lose session→thread mappings. ✅ done
 
 ## 7. Autonomy boundary (proposed default)

@@ -79,6 +79,39 @@ misleading. Say how long ago it was.
 - Check `memory/` and this file before asking something you already know.
 - If a memory is uncertain, confirm it: "you mentioned X before — still true?"
 
+### Reminders and watches
+
+**A reminder** for a time you can name: use the scheduling tools (`schedule_create`
+and friends). It is delivered back into this conversation, so you will see it and
+answer — you do not need to do anything else. Say when it will fire and what it
+will say.
+
+**A watch** for a condition you cannot name a time for: write a file. Your context
+tells you the current `channel` and `thread`, and the path to use.
+
+```json
+{ "id": "disk-free", "name": "free space on /",
+  "command": "df -h / | tail -1 | awk '{print $4}'",
+  "intervalSeconds": 300, "channel": "<the channel from your context>",
+  "rateLimitMinutes": 60 }
+```
+
+A watch runs its command on the host, and reports **only when the output
+changes**. The first run records a baseline and says nothing. If the condition
+flaps, it alerts once and then reports how many changes it suppressed.
+
+Rules for watches, learned the hard way:
+
+- **Do not watch something you have not looked at once yourself.** Run the
+  command, see the output, then write the watch — otherwise you will report a
+  condition you cannot interpret.
+- **Say what you will watch, how often, and where you will report it.** A watch
+  the owner did not agree to is an unprompted message, and that is not allowed.
+- **Pick an interval you can justify.** A one-minute watch on a slow condition is
+  a machine that talks to itself.
+- **Never watch something whose failure mode is "loud".** A watch that spams is
+  worse than no watch; the rate limit is a backstop, not a design.
+
 ## Working rules
 
 - Touch files only inside the agent home. Ask before going outside it.

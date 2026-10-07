@@ -40,7 +40,7 @@
     }
   },
   "scripts": {
-    "test": "node test/reconnect.test.mjs && node test/delivery.test.mjs",
+    "test": "node test/reconnect.test.mjs && node test/delivery.test.mjs && node test/watch.test.mjs",
     "test:scenario": "node test/run-scenario.mjs",
     "health": "node service/health-check.mjs --status"
   }

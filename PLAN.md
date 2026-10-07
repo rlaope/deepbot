@@ -40,7 +40,7 @@ three process restarts; 5/5 on `test/reconnect.test.mjs`; measured injection of
 
 ---
 
-## M1 — A test harness for the agent path ⬅ **next**
+## M1 — A test harness for the agent path ✅ done
 
 **Goal:** stop verifying memory by hand. Nothing in M2 is trustworthy until this
 exists.
@@ -76,7 +76,7 @@ ports, session store bucket).
 
 ---
 
-## M2 — Memory that actually works
+## M2 — Memory that actually works ✅ done
 
 **Goal:** SPEC S1 and S2. This is the reason the project exists.
 
@@ -102,7 +102,7 @@ ports, session store bucket).
 
 ---
 
-## M3 — Never silently dead
+## M3 — Never silently dead ✅ done
 
 **Goal:** SPEC S3. The outage that motivated this went unnoticed for 57 minutes.
 
@@ -115,9 +115,15 @@ ports, session store bucket).
 **Acceptance criteria:** deliberate test that kills connectivity recovers within
 one probe interval and produces one alert, not a storm of them.
 
+**Evidence:** the probe was installed and driven against a deliberately injected
+unhealthy state: `unhealthy — not connected (disconnected 1023s ago)` →
+`restart requested` → `recovered after restart`. The alert path was verified by
+sending one labelled test DM. A real 57-minute outage would now self-heal inside
+the probe interval.
+
 ---
 
-## M4 — Autonomy (scheduled + conditional alerts)
+## M4 — Autonomy (scheduled + conditional alerts) ✅ done
 
 **Goal:** SPEC G4 and the decided autonomy level: reminders and watches, with
 unprompted posts only for a watch the owner asked for.
@@ -134,6 +140,15 @@ stays silent when it does not; a noisy condition is rate-limited and says so.
 
 **Depends on:** M2 (an agent that acts but cannot remember why is a nuisance) and
 M3 (a watch that cannot tell you it went blind is worse than no watch).
+
+**Evidence:** `test/watch.test.mjs` 16/16 — the first observation is a baseline and
+does not alert; a change alerts exactly once; no change stays silent; a change
+inside the rate-limit window is suppressed and the next alert reports how many
+were suppressed; a broken config exits 2 while a missing one is simply nothing to
+do; and a watch authored by the agent in `<home>/watches/` is loaded and reports
+to its own channel. Reminder delivery is covered by `test/delivery.test.mjs` 8/8:
+an assistant message on a mapped session that the adapter is not driving goes to
+that thread.
 
 ---
 
@@ -175,10 +190,10 @@ touch either live instance.
 ## Sequencing summary
 
 ```
-M0 presence ✅ ──▶ M1 test harness ──▶ M2 memory ──▶ M4 autonomy
-                                        │
-M3 health (independent, small) ─────────┘
-M5 distribution ── after M2 proves the value
+M0 presence ✅ ──▶ M1 test harness ✅ ──▶ M2 memory ✅ ──▶ M4 autonomy ✅
+                                          │
+M3 health ✅ (independent, small) ─────────┘
+M5 distribution 🚧 in progress (CI ✅, docs ✅, fresh-install check pending)
 ```
 
 ## What we are deliberately not doing now

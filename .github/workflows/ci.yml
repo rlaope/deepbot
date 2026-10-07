@@ -17,6 +17,7 @@ jobs:
       # fake fetch. They need no harness installation, which is why they run here.
       - run: node test/reconnect.test.mjs
       - run: node test/delivery.test.mjs
+      - run: node test/watch.test.mjs
       # The scenario harness (test/run-scenario.mjs) boots a real profile and is
       # deliberately NOT run here: it needs a harness installation and a model
       # credential. Run it locally; PLAN.md explains why it exists.

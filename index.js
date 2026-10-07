@@ -260,12 +260,26 @@ export function apply(ctx, config) {
     } catch { return null }
   }
 
-  async function contextPreamble() {
+  async function contextPreamble(origin = null) {
     if (!cfg.injectInstructions) return { preamble: '', instructions: 0, memory: 0 }
     const cwd = await sessionCwd()
     const parts = []
     let instructions = 0
     let memory = 0
+
+    // Where this conversation is happening. The agent needs it to aim a
+    // reminder or a watch at the right place, and it cannot infer a channel id
+    // from anything else it can see.
+    if (origin !== null) {
+      const watchConfig = `${cwd}/watches/${origin.channel}-${origin.threadTs}.json`
+      parts.push([
+        '[this conversation]',
+        `channel=${origin.channel} thread=${origin.threadTs}`,
+        `To set up a watch that reports back here, write ${watchConfig} with`,
+        '{"id":"<short-id>","name":"…","command":"<shell command>","intervalSeconds":300,"channel":"' + origin.channel + '","rateLimitMinutes":30}',
+        'then tell the user what you will watch and how often.',
+      ].join('\n'))
+    }
 
     for (const name of ['AGENTS.md', 'CLAUDE.md']) {
       const text = readTextIfPresent(join(cwd, name), cfg.maxInstructionChars)
@@ -360,7 +374,7 @@ export function apply(ctx, config) {
    * Create a session (or resume one) and drive it to completion.
    * @returns {Promise<{text: string, reason: unknown, sessionId: string}>}
    */
-  async function runTurn(prompt, existingSessionId) {
+  async function runTurn(prompt, existingSessionId, origin = null) {
     const agents = ctx.get('agents')
     const sessions = ctx.get('sessions')
     const defaultModel = ctx.get('agentDefaultModel')
@@ -459,7 +473,7 @@ export function apply(ctx, config) {
     try {
       await agent.whenIdle()
       const firstSeq = agent.session.seq
-      const { preamble } = await contextPreamble()
+      const { preamble } = await contextPreamble(origin ?? null)
       agent.followup(userMessage(preamble === '' ? prompt : `${preamble}[user message]\n${prompt}`))
       await agent.whenIdle()
       await sessions.flush(agent.session)
@@ -586,7 +600,7 @@ export function apply(ctx, config) {
     enqueue(async () => {
       const started = Date.now()
       try {
-        const r = await withTimeout(runTurn(prompt, state.sessions[key]), cfg.runTimeoutMs)
+        const r = await withTimeout(runTurn(prompt, state.sessions[key], { channel, threadTs }), cfg.runTimeoutMs)
         if (r.sessionId && r.sessionId !== state.sessions[key]) { state.sessions[key] = r.sessionId; saveState() }
         const ok = r.reason?.kind === 'completed'
         if (ok && r.text) {
