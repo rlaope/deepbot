@@ -30,9 +30,10 @@ deliberately excluded, so an empty result can be correct.
 
 Cheapest first. Prefer the file tools you already have:
 
-1. **Grep the index.** Search `memory/recall-index.jsonl` for a distinctive word
-   from the question (a name, a project, a noun). It is one JSON object per line,
-   so a match gives you the whole message.
+1. **Grep the index.** Search `memory/recall-index.jsonl` for a distinctive noun
+   from the question (a name, a project, a thing). It is one JSON object per line,
+   so a match gives you the whole message. Never answer "I do not have that" from
+   the current session alone — search first, then report what you found.
 2. **Read around a hit.** Grep returns line numbers; read that region to get the
    neighbouring turns, which is usually what makes the answer make sense.
 3. **If you have a shell**, the host also ships a helper:
