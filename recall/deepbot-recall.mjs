@@ -111,10 +111,36 @@ function roleOf(event) {
  * unknown shape is never silently dropped.
  */
 function sourceKindOf(event) {
-  return event?.data?.message?.source?.kind ?? event?.data?.source?.kind ?? null
+  return event?.data?.message?.source?.kind ?? event?.data?.source?.kind ?? event?.data?.kind ?? null
 }
 const HUMAN_KINDS = new Set(['user'])
 const MODEL_KINDS = new Set(['model'])
+
+/**
+ * Harness-injected text, recognised by shape.
+ *
+ * `source.kind` is the clean discriminator when it is present, but it is not
+ * always: measured on this store, time-context, runtime-context and the skill
+ * catalog arrive as `{ type: 'user/message', data: { content: [...] } }` with no
+ * `source` at all. A structural filter alone therefore lets harness boilerplate
+ * into the index, and a search for "runtime" then matches the harness talking
+ * about itself rather than anything a person said.
+ *
+ * These prefixes are only ever produced by the harness, never by a human.
+ */
+const BOILERPLATE_PREFIXES = [
+  'Time sampled while preparing',
+  'Current runtime context.',
+  'The approval policy changed',
+  'You are a delegated subagent',
+  '<system-reminder>',
+  'A previous `hermes update`',
+  'Background subagent ',
+  '실패한 부분을 정확히 말하면',
+]
+function isBoilerplate(text) {
+  return BOILERPLATE_PREFIXES.some((prefix) => text.startsWith(prefix))
+}
 
 /** Find every session log under the store. */
 function findSessionLogs(root) {
@@ -154,6 +180,8 @@ function readSession(file, sessionId, includeInjected) {
     }
     const text = textOf(event)
     if (text === '') continue
+    // Second gate for the shapes that carry no `source` at all.
+    if (!includeInjected && isBoilerplate(text)) { skippedInjected++; continue }
     records.push({
       sessionId: header.id ?? sessionId,
       ts: event.time ?? header.createdAt ?? null,

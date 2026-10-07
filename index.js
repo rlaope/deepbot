@@ -59,6 +59,11 @@ export const inject = [
   'credentials',
   'sessionQuery',
   'sessionPersistence',
+  // Session composition. Declared so the adapter activates only once these exist:
+  // an agent composed without a preset has no tools, and that failure is silent.
+  'agentPresets',
+  'permissionPresets',
+  'workspaceRegistry',
 ]
 
 // Config is validated by hand instead of with a schemastery schema, to keep the
@@ -92,6 +97,11 @@ const DEFAULTS = {
   // resolve the permission preset, resolve the agent preset, acquire its scope,
   // create the workspace, then mount the preset inside `setup` and attach the
   // session to the workspace.
+  // Health. A process that is running but disconnected looks perfectly healthy
+  // from outside — that is how a 57-minute outage went unnoticed. The plugin
+  // publishes what it actually knows, and an external probe reads it.
+  healthFile: undefined,          // default: <stateDir>/health.json
+  heartbeatMs: 60000,
   agentPreset: 'standard',
   permissionPreset: 'workspace-write',
   attachWorkspace: true,
@@ -136,6 +146,31 @@ export function apply(ctx, config) {
       .replace(/xapp-[A-Za-z0-9-]+/g, '<REDACTED>')
     ctx.logger?.info?.(line) ?? console.log(`[deepbot] ${line}`)
     try { appendFileSync(LOG, line + '\n') } catch { /* never die because logging failed */ }
+  }
+
+  // ── Health ────────────────────────────────────────────────────────────────
+  // Written on every connection change, every handled message, and on a timer.
+  // The probe treats a stale file as unhealthy too, which covers a wedged
+  // process (alive, not scheduled, not logging).
+  const HEALTH = cfg.healthFile ?? join(stateDir, 'health.json')
+  const health = {
+    pid: process.pid,
+    startedAt: Date.now(),
+    connected: false,
+    connectedAt: null,
+    disconnectedAt: null,
+    connectAttempts: 0,
+    consecutiveFailures: 0,
+    accepted: 0,
+    answered: 0,
+    lastEventAt: null,
+    lastError: null,
+    updatedAt: Date.now(),
+  }
+  let healthTimer = null
+  function writeHealth() {
+    health.updatedAt = Date.now()
+    try { writeFileSync(HEALTH, JSON.stringify(health, null, 1)) } catch { /* never die for this */ }
   }
 
   // ── State: channel:thread -> sessionId ────────────────────────────────────
@@ -306,16 +341,23 @@ export function apply(ctx, config) {
     const permissionPresets = ctx.get('permissionPresets')
     const workspaceRegistry = ctx.get('workspaceRegistry')
 
+    // Fail loud rather than degrade silently. An earlier version guarded this
+    // with `if (cfg.agentPreset && agentPresets)`, so a missing service or a typo
+    // produced an agent with zero tools and no error — the original symptom,
+    // reproducible by configuration.
     let presetId = null
-    if (cfg.agentPreset && agentPresets) {
+    if (cfg.agentPreset) {
+      if (!agentPresets) throw new Error('deepbot: agentPreset is configured but the agentPresets service is not composed — the agent would have no tools')
+      try { permissionPresets?.resolve?.(cfg.permissionPreset) }
+      catch (e) { throw new Error(`deepbot: unknown permission preset ${JSON.stringify(cfg.permissionPreset)} — ${String(e?.message ?? e)}`) }
       try {
-        permissionPresets?.resolve?.(cfg.permissionPreset)          // validate the name early
         const record = await agentPresets.resolve(cfg.agentPreset)
         presetId = record?.id ?? cfg.agentPreset
       } catch (e) {
         throw new Error(`deepbot: could not resolve agent preset ${JSON.stringify(cfg.agentPreset)} — ${String(e?.message ?? e)}`)
       }
     }
+    // Only Symbol.asyncDispose exists on this lease; there is no dispose().
     const scope = presetId && agentPresets?.acquireScope ? await agentPresets.acquireScope(presetId) : null
 
     const setup = async (agentCtx) => {
@@ -331,6 +373,15 @@ export function apply(ctx, config) {
       catch (e) { log(`workspace create failed — continuing without one: ${String(e?.message ?? e)}`) }
     }
 
+    // meta.cwd must be the workspace's CANONICAL path, and meta.agentPreset must
+    // record the composition. attachSession compares the header cwd against the
+    // workspace path by exact string after realpath, and a resume reads the
+    // preset from the projection rather than the header — so a session created
+    // without it silently reverts to the deployment default on resume, and a
+    // symlinked workspace path fails the attach.
+    const sessionCwdPath = workspace?.path ?? cwd
+    const meta = { cwd: sessionCwdPath, ...(presetId !== null ? { agentPreset: presetId } : {}) }
+
     let handle
     let sessionId = existingSessionId
     try {
@@ -338,7 +389,7 @@ export function apply(ctx, config) {
         handle = await agents.resume({ resumeSessionId: existingSessionId, agentOptions, setup })
       } else {
         sessionId = `slack-${randomUUID()}`           // stands in for brandString(...)
-        handle = await agents.create({ sessionId, meta: { cwd }, agentOptions, setup })
+        handle = await agents.create({ sessionId, meta, agentOptions, setup })
       }
     } catch (e) {
       await scope?.[Symbol.asyncDispose]?.().catch(() => {})
@@ -353,7 +404,12 @@ export function apply(ctx, config) {
     // Post-attach steps, in the reference implementation's order.
     if (workspace?.attachSession && sessionId) {
       try { await workspace.attachSession(sessionId) }
-      catch (e) { log(`workspace.attachSession failed: ${String(e?.message ?? e)}`) }
+      catch (e) {
+        // Reported loudly: the message it throws is about a cwd mismatch, which is
+        // the difference between "workspace-scoped features work" and "they
+        // silently do not".
+        log(`WARNING workspace.attachSession failed: ${String(e?.message ?? e)}`)
+      }
     }
     if (cfg.permissionPreset && permissionPresets?.set) {
       try { permissionPresets.set(agent.session, cfg.permissionPreset) }
@@ -481,6 +537,9 @@ export function apply(ctx, config) {
     const prompt = event.text.replace(new RegExp(`<@${botUserId}>`, 'g'), '').trim().slice(0, cfg.maxPromptChars)
     if (!prompt) return
 
+    health.accepted++
+    health.lastEventAt = Date.now()
+    writeHealth()
     log(`accepted channel=${channel} thread=${threadTs} session=${state.sessions[key] ?? 'new'}`)
 
     enqueue(async () => {
@@ -490,6 +549,8 @@ export function apply(ctx, config) {
         if (r.sessionId && r.sessionId !== state.sessions[key]) { state.sessions[key] = r.sessionId; saveState() }
         const ok = r.reason?.kind === 'completed'
         if (ok && r.text) {
+          health.answered++
+          writeHealth()
           log(`answered channel=${channel} len=${r.text.length} ${Date.now() - started}ms`)
           await say(botToken, channel, threadTs, toSlackMarkdown(r.text))
         } else {
@@ -554,6 +615,10 @@ export function apply(ctx, config) {
       if (stopped) return
       connect().catch((e) => {
         consecutiveFailures++
+        health.connectAttempts++
+        health.consecutiveFailures = consecutiveFailures
+        health.lastError = String(e?.message ?? e)
+        writeHealth()
         log(`reconnect failed (${consecutiveFailures} in a row): ${String(e?.message ?? e)} — still trying`)
         backoff = Math.min(backoff * 2, 60000)
         scheduleReconnect()
@@ -585,6 +650,12 @@ export function apply(ctx, config) {
       backoff = 1000
       consecutiveFailures = 0
       if (reconnectTimer !== null) { clearTimeout(reconnectTimer); reconnectTimer = null }
+      health.connected = true
+      health.connectedAt = Date.now()
+      health.disconnectedAt = null
+      health.consecutiveFailures = 0
+      health.lastError = null
+      writeHealth()
       log('Socket Mode connected')
     })
 
@@ -611,12 +682,18 @@ export function apply(ctx, config) {
     ws.addEventListener('close', () => {
       if (stopped) return
       connected = false
+      health.connected = false
+      health.disconnectedAt = Date.now()
+      writeHealth()
       log('connection closed')
       scheduleReconnect()
     })
 
     ws.addEventListener('error', (e) => {
       connected = false
+      health.connected = false
+      health.lastError = String(e?.message ?? e) || 'WebSocket error'
+      writeHealth()
       log('WebSocket error', String(e?.message ?? e))
     })
   }
@@ -780,8 +857,13 @@ export function apply(ctx, config) {
   ctx.effect(() => {
     startWithRetry()
     startWatchdog()
+    writeHealth()
+    if (healthTimer === null) healthTimer = setInterval(writeHealth, cfg.heartbeatMs)
     return () => {
       stopped = true
+      if (healthTimer !== null) clearInterval(healthTimer)
+      health.connected = false
+      writeHealth()
       if (reconnectTimer !== null) clearTimeout(reconnectTimer)
       if (watchdogTimer !== null) clearInterval(watchdogTimer)
       try { ws?.close() } catch { /* ignore */ }
