@@ -160,6 +160,17 @@ that thread.
 
 ---
 
+### Success criteria that are now tested
+
+| SPEC | Test |
+|---|---|
+| S1 fact recalled across conversations, with its date | `test/scenarios/recall.json` 5/5 |
+| S2 a never-stated fact is not invented | same scenario, final step |
+| S3 never silently disconnected | health probe: injected unhealthy state → restart → recovered |
+| S4 a restart preserves thread→session continuity | `test/scenarios/restart-{1,2}.json` — phase 2 is a NEW process resuming phase 1's session id, and it recalls phase 1's message |
+| S5 no secret in memory or logs | `test/secrets.test.mjs` — pattern scan over the agent home and state dir, and over the repo in CI |
+| S6 installable by someone else | profile built from `profile/` alone + one install command → recall scenario 5/5 |
+
 ## M5 — Distribution (decided: it is a real project) ✅ done
 
 **Goal:** SPEC S6 — someone else can install it from the repository.

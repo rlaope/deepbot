@@ -1,0 +1,6 @@
+{
+  "_comment": "Phase 2: a DIFFERENT process resuming the session created by phase 1. This is what a reboot has to survive.",
+  "steps": [
+    { "session": "P", "say": "방금 전에 내가 뭐라고 했어? 한 줄로만.", "expectContains": "국밥" }
+  ]
+}

@@ -1,0 +1,7 @@
+{
+  "_comment": "Phase 1 of the restart test (SPEC S4). Creates a session and a fact, then the runner is stopped and started again.",
+  "steps": [
+    { "session": "P", "say": "내가 좋아하는 음식은 국밥이야. 기억해둬." },
+    { "rebuildIndex": true }
+  ]
+}

@@ -175,6 +175,24 @@ export function apply(ctx, config) {
 
   // ── State: channel:thread -> sessionId ────────────────────────────────────
   const state = loadState()
+
+  // Restart continuity. A scenario that spans a process restart cannot keep its
+  // mapping in memory, so the runner seeds it on the way in and collects it on
+  // the way out.
+  //
+  // This is a SEPARATE map from `state.sessions`: that one is keyed by
+  // channel:thread for real Slack threads, this one by scenario session name.
+  // Putting the seed in the wrong one looked like it worked (it logged) and had
+  // no effect, which is why the first restart test created a brand-new session
+  // and quietly answered nothing useful.
+  const seededSessions = {}
+  if (process.env.DEEPBOT_SESSION_SEED) {
+    try {
+      const seed = JSON.parse(readFileSync(process.env.DEEPBOT_SESSION_SEED, 'utf8'))
+      for (const [name, id] of Object.entries(seed.sessions ?? {})) seededSessions[name] = id
+      log(`seeded ${Object.keys(seededSessions).length} scenario session(s) from the runner`)
+    } catch (e) { log(`could not read the session seed: ${String(e?.message ?? e)}`) }
+  }
   let saveTimer = null
   function loadState() {
     if (!existsSync(STATE)) return { sessions: {}, seen: {} }
@@ -800,7 +818,7 @@ export function apply(ctx, config) {
 
   async function runScenario(scriptPath) {
     const steps = JSON.parse(readFileSync(scriptPath, 'utf8')).steps ?? []
-    const sessions = {}
+    const sessions = { ...seededSessions }
     const results = []
     let failed = 0
     log(`scenario start — ${steps.length} step(s) from ${scriptPath}`)
@@ -888,6 +906,10 @@ export function apply(ctx, config) {
       }
     }
 
+    if (process.env.DEEPBOT_SESSION_DUMP) {
+      try { writeFileSync(process.env.DEEPBOT_SESSION_DUMP, JSON.stringify({ sessions }, null, 1)) }
+      catch (e) { log('could not write the session dump', String(e)) }
+    }
     const out = { scenario: scriptPath, cwd: await sessionCwd(), total: results.length, failed, steps: results, finishedAt: Date.now() }
     // The runner may pin this path: the agent home is fresh per run, so a fixed
     // path under it cannot be predicted from outside.

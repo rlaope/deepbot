@@ -34,9 +34,13 @@ const args = process.argv.slice(2)
 // positional scenario path — otherwise `--timeout 240` reads as a scenario.
 let scenarioArg
 let timeoutS = 300
+let seedFile
+let dumpFile
 for (let i = 0; i < args.length; i++) {
   const arg = args[i]
   if (arg === '--timeout') { timeoutS = Number(args[++i]); continue }
+  if (arg === '--seed') { seedFile = resolve(args[++i]); continue }
+  if (arg === '--dump') { dumpFile = resolve(args[++i]); continue }
   if (arg.startsWith('--')) continue
   if (scenarioArg === undefined) scenarioArg = arg
 }
@@ -91,6 +95,8 @@ const child = spawn(DSH_BIN, ['--profile', PROFILE, '--port', PORT, '--no-open']
     DEEPBOT_RECALL_SCRIPT: join(REPO, 'recall', 'deepbot-recall.mjs'),
     DEEPBOT_SCENARIO_RESULT: RESULT,
     DEEPBOT_HOME: TEST_HOME,
+    ...(seedFile !== undefined ? { DEEPBOT_SESSION_SEED: seedFile } : {}),
+    ...(dumpFile !== undefined ? { DEEPBOT_SESSION_DUMP: dumpFile } : {}),
   },
   stdio: ['ignore', 'pipe', 'pipe'],
 })
@@ -122,7 +128,8 @@ if (!finished) {
   console.error(`scenario did not finish within ${timeoutS}s`)
   console.error('--- gateway output ---')
   console.error(childOutput.split('\n').slice(-40).join('\n'))
-  if (!keep) rmSync(TEST_HOME, { recursive: true, force: true })
+  const pinned = Boolean(process.env.DEEPBOT_TEST_HOME)
+if (!keep && dumpFile === undefined) rmSync(TEST_HOME, { recursive: true, force: true })
   process.exit(1)
 }
 
