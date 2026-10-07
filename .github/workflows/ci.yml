@@ -17,6 +17,7 @@ jobs:
       # fake fetch. They need no harness installation, which is why they run here.
       - run: node test/reconnect.test.mjs
       - run: node test/delivery.test.mjs
+      - run: node test/history.test.mjs
       - run: node test/watch.test.mjs
       - run: node test/secrets.test.mjs .
       # The scenario harness (test/run-scenario.mjs) boots a real profile and is

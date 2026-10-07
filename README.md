@@ -48,6 +48,7 @@ Both are drafts until their open decisions are answered.
 | **Watches** ("tell me when this changes") | ✅ 16/16 unit, verified live with a real DM |
 | Sessions composed with an agent preset (the agent has tools) | ✅ verified — this was missing and made every other failure look like a memory bug |
 | Install from the repository alone | ✅ verified: profile from `profile/` + one install command → 5/5 |
+| **Reading the conversation it was mentioned in** | ✅ live: a real meeting thread is fetched, paged, name-resolved and injected as content |
 | Attachments / images from Slack | ❌ not implemented |
 | Streaming progress into Slack | ❌ posts the finished turn only |
 | Read-scope isolation between instances | ❌ reads are not sandboxed; see [SPEC.md](SPEC.md) §8 |
