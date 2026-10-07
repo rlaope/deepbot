@@ -376,6 +376,20 @@ export function apply(ctx, config) {
   let stopped = false
   let botToken = null
   let appToken = null
+  let botUserId = null
+  // Reconnect state.
+  //
+  // A single retry is NOT enough. An earlier version scheduled exactly one retry
+  // inside the close handler; when that retry failed (network down, machine
+  // asleep) the catch only logged it and the chain ended — leaving the process
+  // alive, the web UI healthy, and NO Slack connection, with nothing in the log
+  // after the failure. It went unnoticed for 57 minutes. The loop below never
+  // gives up, and the watchdog re-arms it if the socket goes quiet without a
+  // close event.
+  let reconnectTimer = null
+  let watchdogTimer = null
+  let connected = false
+  let consecutiveFailures = 0
 
   async function openConnection() {
     // Two traps here, both hit in practice:
@@ -387,12 +401,47 @@ export function apply(ctx, config) {
     return r.url
   }
 
-  async function connect(botUserId) {
+  /** Retry forever with capped backoff; a successful open resets it. */
+  function scheduleReconnect(delay = backoff) {
+    if (stopped || reconnectTimer !== null) return
+    log(`reconnect scheduled in ${delay}ms`)
+    reconnectTimer = setTimeout(() => {
+      reconnectTimer = null
+      if (stopped) return
+      connect().catch((e) => {
+        consecutiveFailures++
+        log(`reconnect failed (${consecutiveFailures} in a row): ${String(e?.message ?? e)} — still trying`)
+        backoff = Math.min(backoff * 2, 60000)
+        scheduleReconnect()
+      })
+    }, delay)
+    backoff = Math.min(backoff * 2, 60000)
+  }
+
+  /** The socket can also die without a close event; re-arm if nothing is pending. */
+  function startWatchdog() {
+    if (watchdogTimer !== null) return
+    watchdogTimer = setInterval(() => {
+      if (stopped) return
+      if (!connected && reconnectTimer === null) {
+        log('watchdog: not connected and nothing scheduled — re-arming')
+        scheduleReconnect(0)
+      }
+    }, 60000)
+  }
+
+  async function connect() {
     if (stopped) return
     const url = await openConnection()
     ws = new WebSocket(url)
 
-    ws.addEventListener('open', () => { backoff = 1000; log('Socket Mode connected') })
+    ws.addEventListener('open', () => {
+      connected = true
+      backoff = 1000
+      consecutiveFailures = 0
+      if (reconnectTimer !== null) { clearTimeout(reconnectTimer); reconnectTimer = null }
+      log('Socket Mode connected')
+    })
 
     ws.addEventListener('message', (msg) => {
       let env
@@ -416,12 +465,15 @@ export function apply(ctx, config) {
 
     ws.addEventListener('close', () => {
       if (stopped) return
-      log(`connection closed — retrying in ${backoff}ms`)
-      setTimeout(() => connect(botUserId).catch((e) => log('reconnect failed', String(e))), backoff)
-      backoff = Math.min(backoff * 2, 60000)
+      connected = false
+      log('connection closed')
+      scheduleReconnect()
     })
 
-    ws.addEventListener('error', (e) => log('WebSocket error', String(e?.message ?? e)))
+    ws.addEventListener('error', (e) => {
+      connected = false
+      log('WebSocket error', String(e?.message ?? e))
+    })
   }
 
   async function start() {
@@ -454,14 +506,35 @@ export function apply(ctx, config) {
     log(`starting — bot=@${me.user} team=${me.team} channels=${targetChannels.join(',')} mode=${cfg.replyMode}`)
     log(`session cwd=${cwd}  state=${stateDir}  mapped sessions=${Object.keys(state.sessions).length}`)
 
-    await connect(me.user_id)
+    botUserId = me.user_id
+    await connect()
   }
 
   // ── Lifecycle: close the socket when the plugin unloads ───────────────────
+  /**
+   * Startup keeps retrying too: if the credentials are temporarily unresolvable
+   * or the network is down at boot, giving up would leave the bot silently dead.
+   */
+  async function startWithRetry() {
+    try { await start() }
+    catch (e) {
+      if (stopped) return
+      consecutiveFailures++
+      log(`startup failed (${consecutiveFailures} in a row): ${String(e?.message ?? e)} — retrying in ${backoff}ms`)
+      setTimeout(() => {
+        backoff = Math.min(backoff * 2, 60000)
+        if (!stopped) startWithRetry()
+      }, backoff)
+    }
+  }
+
   ctx.effect(() => {
-    start().catch((e) => log('startup failed', String(e?.stack ?? e)))
+    startWithRetry()
+    startWatchdog()
     return () => {
       stopped = true
+      if (reconnectTimer !== null) clearTimeout(reconnectTimer)
+      if (watchdogTimer !== null) clearInterval(watchdogTimer)
       try { ws?.close() } catch { /* ignore */ }
       log('plugin unloading — socket closed')
     }
