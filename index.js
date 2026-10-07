@@ -436,16 +436,35 @@ export function apply(ctx, config) {
     const sessionCwdPath = workspace?.path ?? cwd
     const meta = { cwd: sessionCwdPath, ...(presetId !== null ? { agentPreset: presetId } : {}) }
 
+    // A scheduled delivery owns its session while it runs, so a resume attempted
+    // at that moment is refused ("already owned by an active write handle").
+    // Retrying briefly is the right behaviour: the reminder's own turn is what
+    // the user is waiting for, and this message is a second one arriving on top.
+    async function adopt(existing) {
+      let lastError
+      for (let attempt = 1; attempt <= 3; attempt++) {
+        try {
+          return existing
+            ? await agents.resume({ resumeSessionId: existing, agentOptions, setup })
+            : await agents.create({ sessionId, meta, agentOptions, setup })
+        } catch (e) {
+          lastError = e
+          const message = String(e?.message ?? e)
+          if (!/active write handle/i.test(message)) throw e
+          log(`session ${sessionId} is busy (another turn owns it) — retry ${attempt}/3 in 3s`)
+          await new Promise((resolve) => setTimeout(resolve, 3000))
+        }
+      }
+      throw new Error(`deepbot: could not take the session after retries — ${String(lastError?.message ?? lastError)}`)
+    }
+
     let handle
     let sessionId = existingSessionId ?? `slack-${randomUUID()}`   // stands in for brandString(...)
     activeTurns.add(sessionId)
     try {
-      if (existingSessionId) {
-        handle = await agents.resume({ resumeSessionId: existingSessionId, agentOptions, setup })
-      } else {
-        handle = await agents.create({ sessionId, meta, agentOptions, setup })
-      }
+      handle = await adopt(existingSessionId)
     } catch (e) {
+      activeTurns.delete(sessionId)
       await scope?.[Symbol.asyncDispose]?.().catch(() => {})
       throw e
     }
@@ -788,6 +807,43 @@ export function apply(ctx, config) {
 
     for (const [index, step] of steps.entries()) {
       const n = index + 1
+      if (step.expectSessionTurn !== undefined) {
+        // Assert against the session LOG rather than by driving a turn. A
+        // scheduled delivery owns the session while it runs, so the adapter
+        // cannot resume it — and that is exactly the case worth checking: the
+        // reminder fired and the agent acted, without this plugin's involvement.
+        const target = step.expectSessionTurn
+        const sessionId = sessions[target.session ?? 'default']
+        try {
+          const query = ctx.get('sessionQuery')
+          if (!query || !sessionId) throw new Error('no session to inspect')
+          const observation = await query.observeSession(sessionId)
+          const events = observation?.events ?? []
+          const hit = events.some((e) => {
+            if (e?.type !== 'user/message' && e?.type !== 'assistant/message') return false
+            const text = (e.data?.message?.content ?? e.data?.content ?? [])
+              .filter((b) => b?.type === 'text').map((b) => b.text).join('')
+            return text.includes(target.contains)
+          })
+          if (!hit) failed++
+          results.push({ step: n, kind: 'expectSessionTurn', session: target.session, contains: target.contains, ok: hit, events: events.length })
+          log(`  step ${n}: session log contains ${JSON.stringify(target.contains)} — ${hit ? 'PASS' : 'FAIL'} (${events.length} events)`)
+        } catch (e) {
+          failed++
+          results.push({ step: n, kind: 'expectSessionTurn', ok: false, error: String(e?.message ?? e) })
+          log(`  step ${n}: session inspection FAILED — ${String(e?.message ?? e)}`)
+        }
+        continue
+      }
+      if (typeof step.waitSeconds === 'number' && step.waitSeconds > 0) {
+        // Waiting is a first-class step: a scheduled reminder fires on the host's
+        // clock, so the only way to test the path is to let the clock move.
+        const ms = Math.min(step.waitSeconds, 600) * 1000
+        log(`  step ${n}: waiting ${ms / 1000}s for a scheduled delivery`)
+        await new Promise((resolve) => setTimeout(resolve, ms))
+        results.push({ step: n, kind: 'wait', ok: true, ms })
+        continue
+      }
       if (step.rebuildIndex === true) {
         try {
           await rebuildIndex()

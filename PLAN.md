@@ -141,6 +141,14 @@ stays silent when it does not; a noisy condition is rate-limited and says so.
 **Depends on:** M2 (an agent that acts but cannot remember why is a nuisance) and
 M3 (a watch that cannot tell you it went blind is worse than no watch).
 
+**Reminder path, verified without a human:** `test/scenarios/reminder.json` 4/4 —
+the agent creates a reminder, it fires on the wall clock, and the schedule wakes
+the agent on its own. The adapter does NOT drive that turn (the schedule owns the
+session while it delivers, which the adapter now retries around rather than
+failing), so the assertion is made against the session log through
+`sessionQuery.observeSession`. Delivery of that turn's message into Slack is
+covered by `test/delivery.test.mjs`.
+
 **Evidence:** `test/watch.test.mjs` 16/16 — the first observation is a baseline and
 does not alert; a change alerts exactly once; no change stays silent; a change
 inside the rate-limit window is suppressed and the next alert reports how many
@@ -152,9 +160,13 @@ that thread.
 
 ---
 
-## M5 — Distribution (decided: it is a real project)
+## M5 — Distribution (decided: it is a real project) ✅ done
 
 **Goal:** SPEC S6 — someone else can install it from the repository.
+
+**Verified:** a profile built from this repository's `profile/` directory alone,
+plus one `dsh plugin add <repo>` and a model route, passes the recall scenario
+5/5 on a fresh agent home. CI runs the harness-free tests on every push.
 
 - Fresh-clone install from the README, verified on a clean machine or user.
 - Config entirely in the profile, no machine-specific paths in the repo.

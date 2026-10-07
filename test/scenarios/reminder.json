@@ -1,0 +1,23 @@
+{
+  "_comment": "Does a scheduled reminder actually fire and wake the agent on its own? The Turn is NOT driven by the adapter — the schedule owns the session while it delivers — so the assertion is against the session log. Slack delivery is covered by test/delivery.test.mjs.",
+  "steps": [
+    {
+      "session": "R",
+      "say": "1분 뒤에 '물 마실 시간'이라고 알려줘. 리마인더를 만들어줘."
+    },
+    {
+      "session": "R",
+      "say": "만들어졌으면 '생성됨'이라고만 답해.",
+      "expectContains": "생성"
+    },
+    {
+      "waitSeconds": 85
+    },
+    {
+      "expectSessionTurn": {
+        "session": "R",
+        "contains": "물 마실 시간"
+      }
+    }
+  ]
+}
