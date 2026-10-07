@@ -82,6 +82,19 @@ const DEFAULTS = {
   injectInstructions: true,
   maxInstructionChars: 12000,
   maxMemoryChars: 6000,
+  // Session composition. An agent's tools are NOT global: they are composed by
+  // an agent preset, mounted into that agent's own context. Creating a session
+  // without mounting one yields an agent with no tools at all — which is what
+  // happened here for days, and it looked like a memory bug because the agent
+  // could not read the file it was told to search.
+  //
+  // The reference implementation (dsh-webhook) does the same five steps:
+  // resolve the permission preset, resolve the agent preset, acquire its scope,
+  // create the workspace, then mount the preset inside `setup` and attach the
+  // session to the workspace.
+  agentPreset: 'standard',
+  permissionPreset: 'workspace-write',
+  attachWorkspace: true,
   // Diagnostic: run a single turn with this prompt at startup, log the result,
   // and never touch Slack. This is the only way to exercise in-process session
   // creation without opening a Socket Mode connection.
@@ -283,25 +296,69 @@ export function apply(ctx, config) {
     const agentOptions = { provider: selection.provider, model: selection.model }
     const cwd = await sessionCwd()
 
-    // MODEL_SELECTION: upstream calls installModelSelection(agentCtx, ...) here
-    // to pin the model selection into the agent tree. That helper lives in
-    // @deepseek-ai/dsh-agent and is not importable from a profile-installed
-    // plugin, so only `agentOptions` is passed. If bootstrapping ever fails,
-    // the surrounding catch surfaces the original error.
-    const setup = (agentCtx) => {
-      void agentCtx
+    // ── Session composition ────────────────────────────────────────────────
+    // Everything above this line is a session shell. The capabilities — the tool
+    // set — come from mounting an agent preset into the agent's own context.
+    // MODEL_SELECTION: upstream additionally calls installModelSelection here;
+    // that helper lives in @deepseek-ai/dsh-agent and is not importable from a
+    // profile-installed plugin, so `agentOptions` carries the model instead.
+    const agentPresets = ctx.get('agentPresets')
+    const permissionPresets = ctx.get('permissionPresets')
+    const workspaceRegistry = ctx.get('workspaceRegistry')
+
+    let presetId = null
+    if (cfg.agentPreset && agentPresets) {
+      try {
+        permissionPresets?.resolve?.(cfg.permissionPreset)          // validate the name early
+        const record = await agentPresets.resolve(cfg.agentPreset)
+        presetId = record?.id ?? cfg.agentPreset
+      } catch (e) {
+        throw new Error(`deepbot: could not resolve agent preset ${JSON.stringify(cfg.agentPreset)} — ${String(e?.message ?? e)}`)
+      }
+    }
+    const scope = presetId && agentPresets?.acquireScope ? await agentPresets.acquireScope(presetId) : null
+
+    const setup = async (agentCtx) => {
+      if (presetId && agentPresets?.mount) await agentPresets.mount(agentCtx, presetId)
+    }
+
+    // A workspace is what the harness's own instruction loader and other
+    // workspace-scoped plugins key off. Attaching one is also why AGENTS.md was
+    // invisible before; the prompt injection above remains as a fallback.
+    let workspace = null
+    if (cfg.attachWorkspace && workspaceRegistry?.create) {
+      try { workspace = await workspaceRegistry.create(cwd) }
+      catch (e) { log(`workspace create failed — continuing without one: ${String(e?.message ?? e)}`) }
     }
 
     let handle
     let sessionId = existingSessionId
-    if (existingSessionId) {
-      handle = await agents.resume({ resumeSessionId: existingSessionId, agentOptions, setup })
-    } else {
-      sessionId = `slack-${randomUUID()}`           // stands in for brandString(...)
-      handle = await agents.create({ sessionId, meta: { cwd }, agentOptions, setup })
+    try {
+      if (existingSessionId) {
+        handle = await agents.resume({ resumeSessionId: existingSessionId, agentOptions, setup })
+      } else {
+        sessionId = `slack-${randomUUID()}`           // stands in for brandString(...)
+        handle = await agents.create({ sessionId, meta: { cwd }, agentOptions, setup })
+      }
+    } catch (e) {
+      await scope?.[Symbol.asyncDispose]?.().catch(() => {})
+      throw e
     }
     const agent = handle?.agent
-    if (!agent?.followup || !agent?.whenIdle) throw new Error('deepbot: agents.create/resume did not return an Agent')
+    if (!agent?.followup || !agent?.whenIdle) {
+      await scope?.[Symbol.asyncDispose]?.().catch(() => {})
+      throw new Error('deepbot: agents.create/resume did not return an Agent')
+    }
+
+    // Post-attach steps, in the reference implementation's order.
+    if (workspace?.attachSession && sessionId) {
+      try { await workspace.attachSession(sessionId) }
+      catch (e) { log(`workspace.attachSession failed: ${String(e?.message ?? e)}`) }
+    }
+    if (cfg.permissionPreset && permissionPresets?.set) {
+      try { permissionPresets.set(agent.session, cfg.permissionPreset) }
+      catch (e) { log(`permissionPresets.set failed: ${String(e?.message ?? e)}`) }
+    }
 
     try {
       await agent.whenIdle()
@@ -317,6 +374,7 @@ export function apply(ctx, config) {
       // turn can resume; keeping it alive would pile one agent per thread into
       // memory.
       try { await handle.dispose?.() } catch (e) { log('dispose failed', String(e)) }
+      try { await scope?.[Symbol.asyncDispose]?.() } catch (e) { log('preset scope dispose failed', String(e)) }
     }
   }
 
@@ -485,6 +543,10 @@ export function apply(ctx, config) {
 
   /** Retry forever with capped backoff; a successful open resets it. */
   function scheduleReconnect(delay = backoff) {
+    // No Slack client in this mode (scenario / selfTest): there is nothing to
+    // reconnect, and trying would spam the log with auth failures against a real
+    // app token. This happened while running the test harness.
+    if (appToken === null || botToken === null) return
     if (stopped || reconnectTimer !== null) return
     log(`reconnect scheduled in ${delay}ms`)
     reconnectTimer = setTimeout(() => {
@@ -502,6 +564,7 @@ export function apply(ctx, config) {
 
   /** The socket can also die without a close event; re-arm if nothing is pending. */
   function startWatchdog() {
+    if (appToken === null) return          // see scheduleReconnect
     if (watchdogTimer !== null) return
     watchdogTimer = setInterval(() => {
       if (stopped) return
@@ -613,6 +676,13 @@ export function apply(ctx, config) {
         const checks = []
         if (step.expectContains !== undefined) checks.push({ what: `contains ${JSON.stringify(step.expectContains)}`, ok: text.includes(step.expectContains) })
         if (step.expectNotContains !== undefined) checks.push({ what: `not contains ${JSON.stringify(step.expectNotContains)}`, ok: !text.includes(step.expectNotContains) })
+        // "must admit it does not know", phrased as any-of: a not-contains check
+        // cannot express it, because an honest answer may name the thing it is
+        // declining to claim. Learned from a false failure on exactly that.
+        if (Array.isArray(step.expectAnyOf) && step.expectAnyOf.length > 0) {
+          const hit = step.expectAnyOf.find((phrase) => text.includes(phrase))
+          checks.push({ what: `says it does not know (one of ${step.expectAnyOf.join(' / ')})`, ok: hit !== undefined })
+        }
         if (Array.isArray(step.expectToolUse) && step.expectToolUse.length > 0) {
           const used = r.toolsUsed ?? []
           const hit = step.expectToolUse.some((t) => used.includes(t))
@@ -631,7 +701,11 @@ export function apply(ctx, config) {
     }
 
     const out = { scenario: scriptPath, cwd: await sessionCwd(), total: results.length, failed, steps: results, finishedAt: Date.now() }
-    try { writeFileSync(join(stateDir, 'scenario-result.json'), JSON.stringify(out, null, 1)) } catch (e) { log('could not write scenario-result.json', String(e)) }
+    // The runner may pin this path: the agent home is fresh per run, so a fixed
+    // path under it cannot be predicted from outside.
+    const resultPath = process.env.DEEPBOT_SCENARIO_RESULT ?? join(stateDir, 'scenario-result.json')
+    try { writeFileSync(resultPath, JSON.stringify(out, null, 1)); log(`scenario result -> ${resultPath}`) }
+    catch (e) { log('could not write the scenario result', String(e)) }
     log(`scenario done — ${results.length - failed}/${results.length} step(s) passed`)
     return out
   }
@@ -674,6 +748,7 @@ export function apply(ctx, config) {
     log(`session cwd=${cwd}  state=${stateDir}  mapped sessions=${Object.keys(state.sessions).length}`)
     if (cfg.injectInstructions) {
       const probe = await contextPreamble()
+      log(`session composition: preset=${cfg.agentPreset} permission=${cfg.permissionPreset} workspace=${cfg.attachWorkspace ? 'attach' : 'none'}`)
       log(`context injection: ${probe.instructions} chars of instructions, ${probe.memory} chars of notes` +
         (probe.instructions === 0 ? ' — WARNING: no AGENTS.md/CLAUDE.md found in the session cwd' : ''))
     } else {

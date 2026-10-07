@@ -24,7 +24,7 @@ import { spawn } from 'node:child_process'
 import { cpSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { homedir } from 'node:os'
+import { homedir, tmpdir } from 'node:os'
 
 const HERE = dirname(fileURLToPath(import.meta.url))
 const REPO = resolve(HERE, '..')
@@ -45,11 +45,19 @@ const keep = args.includes('--keep')
 
 const DSH_BIN = process.env.DSH_BIN ?? '/Applications/DeepSeek Harness.app/Contents/Resources/runtime/cli/bin/dsh'
 const PROFILE = process.env.DEEPBOT_TEST_PROFILE ?? 'agent-test'
-const TEST_HOME = process.env.DEEPBOT_TEST_HOME ?? join(homedir(), 'dsh-agent-test')
+// A UNIQUE home per run, deliberately.
+//
+// The session store is bucketed by working directory, so reusing one home makes
+// a second run inherit the first run's sessions and memory notes — and a recall
+// assertion can then pass on stale state without this run proving anything. It
+// looked green for exactly that reason once. A fresh home per run means the only
+// thing recall can find is what this run wrote.
+const TEST_HOME = process.env.DEEPBOT_TEST_HOME ?? join(homedir(), `dsh-agent-test-${Date.now().toString(36)}`)
 const PORT = process.env.DEEPBOT_TEST_PORT ?? '19599'
 const LIVE_HOME = process.env.DEEPBOT_LIVE_HOME ?? join(homedir(), 'dsh-agent')
-const PLUGIN_STATE = join(TEST_HOME, 'plugin-state')
-const RESULT = join(PLUGIN_STATE, 'scenario-result.json')
+// The result path is pinned outside the (fresh, disposable) agent home, because
+// the plugin cannot predict a home that changes every run.
+const RESULT = process.env.DEEPBOT_SCENARIO_RESULT ?? join(tmpdir(), `deepbot-scenario-${process.pid}.json`)
 
 function fail(message) {
   console.error(`setup error: ${message}`)
@@ -61,7 +69,7 @@ if (!existsSync(DSH_BIN)) fail(`dsh not found: ${DSH_BIN} (set DSH_BIN)`)
 
 console.log(`scenario : ${scenario}`)
 console.log(`profile  : ${PROFILE}`)
-console.log(`home     : ${TEST_HOME}`)
+console.log(`home     : ${TEST_HOME}${process.env.DEEPBOT_TEST_HOME ? ' (pinned)' : ' (fresh)'}`)
 console.log(`port     : ${PORT}`)
 console.log()
 
@@ -73,7 +81,6 @@ for (const file of ['AGENTS.md', 'CLAUDE.md']) {
   if (existsSync(from)) cpSync(from, join(TEST_HOME, file))
 }
 mkdirSync(join(TEST_HOME, 'memory'), { recursive: true })
-mkdirSync(PLUGIN_STATE, { recursive: true })
 rmSync(RESULT, { force: true })
 
 const child = spawn(DSH_BIN, ['--profile', PROFILE, '--port', PORT, '--no-open'], {
@@ -82,6 +89,7 @@ const child = spawn(DSH_BIN, ['--profile', PROFILE, '--port', PORT, '--no-open']
     ...process.env,
     DEEPBOT_SELF_TEST_SCRIPT: scenario,
     DEEPBOT_RECALL_SCRIPT: join(REPO, 'recall', 'deepbot-recall.mjs'),
+    DEEPBOT_SCENARIO_RESULT: RESULT,
     DEEPBOT_HOME: TEST_HOME,
   },
   stdio: ['ignore', 'pipe', 'pipe'],
@@ -129,8 +137,9 @@ for (const step of result.steps) {
 console.log()
 console.log(`${result.total - result.failed}/${result.total} steps passed  (cwd ${result.cwd})`)
 
-// Leave the artifacts behind for inspection; a passing run cleans up.
-if (!keep && result.failed === 0) rmSync(TEST_HOME, { recursive: true, force: true })
+// Always clean the unique home unless asked to keep it: it exists only for this
+// run, and leaving it would pollute the next run's session bucket.
+if (!keep) rmSync(TEST_HOME, { recursive: true, force: true })
 else console.log(`kept test home for inspection: ${TEST_HOME}`)
 
 process.exit(result.failed === 0 ? 0 : 1)

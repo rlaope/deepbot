@@ -28,7 +28,16 @@
     {
       "session": "B",
       "say": "내가 십이지장궤양에 걸린 적 있어?",
-      "expectNotContains": "국밥"
+      "expectAnyOf": [
+        "모릅니다",
+        "없습니다",
+        "기록에 없",
+        "찾지 못",
+        "없는 것으로",
+        "not found",
+        "no record"
+      ],
+      "_why": "S2: never invent. It may name the thing it declines to claim, so the check is \"admits it does not know\", not \"never mentions it\"."
     }
   ]
 }
