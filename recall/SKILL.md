@@ -49,6 +49,10 @@ Cheapest first. Prefer the file tools you already have:
 
 ## Rules
 
+- **Give the time gap, not "just now".** Your prompt carries the timestamp of each
+  turn. A message from yesterday is not something the user "just" said.
+- **Quote what you find, with its date.** "We discussed X on 2026-10-06" beats
+  "I believe we discussed X".
 - **Quote what you find, with its date.** "We discussed X on 2026-10-06" beats
   "I believe we discussed X".
 - **Say when you did not find it.** An empty search is a finding, not a failure.

@@ -51,6 +51,11 @@ You have no built-in memory of other sessions. Follow the **`recall` skill**: gr
 what you found with its date. If nothing matches, say you did not find it — an
 invented memory is worse than an admitted gap.
 
+**Never call an old message "just now".** Each turn's timestamp is in your prompt;
+use it. In one measured case the agent answered a follow-up with "what you just
+said was …" about a message from 18 hours earlier — factually correct, and still
+misleading. Say how long ago it was.
+
 ### Writing to `memory/`
 
 - One topic per file: `facts.md`, `user-preferences.md`, `project-<name>.md`.

@@ -99,6 +99,23 @@ function roleOf(event) {
   return null
 }
 
+/**
+ * The harness records system injections as user-role messages, so filtering by
+ * role alone is not enough: measured on a real store, 33% of "user" messages
+ * were injections (time-context, runtime-context, skill-catalog, user-approval,
+ * agent-message, subagent-settled). Indexing them pollutes recall — a search for
+ * "runtime" matches harness boilerplate instead of anything a person said.
+ *
+ * `source.kind` separates them cleanly: 'user' is human speech, 'model' is model
+ * output. Anything else is protocol traffic. An absent kind is kept, so an
+ * unknown shape is never silently dropped.
+ */
+function sourceKindOf(event) {
+  return event?.data?.message?.source?.kind ?? event?.data?.source?.kind ?? null
+}
+const HUMAN_KINDS = new Set(['user'])
+const MODEL_KINDS = new Set(['model'])
+
 /** Find every session log under the store. */
 function findSessionLogs(root) {
   const found = []
@@ -115,10 +132,11 @@ function findSessionLogs(root) {
   return found
 }
 
-function readSession(file, sessionId) {
+function readSession(file, sessionId, includeInjected) {
   const raw = decompressAllFrames(readFileSync(file))
   const lines = raw.split('\n').filter((l) => l.trim() !== '')
   const records = []
+  let skippedInjected = 0
   let header = { id: sessionId, createdAt: undefined, cwd: undefined }
   for (const line of lines) {
     let event
@@ -129,6 +147,11 @@ function readSession(file, sessionId) {
     }
     const role = roleOf(event)
     if (role === null) continue
+    const kind = sourceKindOf(event)
+    if (!includeInjected && kind !== null) {
+      const wanted = role === 'user' ? HUMAN_KINDS : MODEL_KINDS
+      if (!wanted.has(kind)) { skippedInjected++; continue }
+    }
     const text = textOf(event)
     if (text === '') continue
     records.push({
@@ -136,10 +159,11 @@ function readSession(file, sessionId) {
       ts: event.time ?? header.createdAt ?? null,
       seq: event.seq ?? null,
       role,
+      ...(kind !== null ? { sourceKind: kind } : {}),
       text,
     })
   }
-  return { header, records }
+  return { header, records, skippedInjected }
 }
 
 function buildIndex(outFile, quiet) {
@@ -149,17 +173,21 @@ function buildIndex(outFile, quiet) {
   // recall unrelated contexts (other profiles' sessions, build/planning runs).
   // Pass --all-cwds to index the entire store deliberately.
   const includeAllCwds = argv.includes('--all-cwds')
+  // --include-injected indexes harness protocol traffic too (debugging only).
+  const includeInjected = argv.includes('--include-injected')
   const wantedCwd = flag('cwd', AGENT_HOME)
   const all = []
   const perSession = []
   let skippedOtherCwd = 0
+  let injected = 0
   for (const { file, sessionId } of logs) {
     let parsed
-    try { parsed = readSession(file, sessionId) } catch (e) {
+    try { parsed = readSession(file, sessionId, includeInjected) } catch (e) {
       if (!quiet) console.error(`  skip ${sessionId}: ${String(e.message ?? e)}`)
       continue
     }
     if (!includeAllCwds && parsed.header.cwd !== wantedCwd) { skippedOtherCwd++; continue }
+    injected += parsed.skippedInjected ?? 0
     if (parsed.records.length === 0) continue
     all.push(...parsed.records)
     perSession.push({
@@ -178,6 +206,7 @@ function buildIndex(outFile, quiet) {
       generatedAt: Date.now(),
       scope: includeAllCwds ? 'all working directories' : wantedCwd,
       skippedOtherCwd,
+      skippedInjected: injected,
       sessions: perSession.sort((a, b) => (b.startedAt ?? 0) - (a.startedAt ?? 0)),
     }, null, 1),
   )
@@ -185,6 +214,9 @@ function buildIndex(outFile, quiet) {
     console.log(`indexed ${all.length} messages from ${perSession.length} session(s) -> ${outFile}`)
     if (skippedOtherCwd > 0) {
       console.log(`  ${skippedOtherCwd} session(s) skipped (different working directory; use --all-cwds to include)`)
+    }
+    if (injected > 0) {
+      console.log(`  ${injected} injected protocol message(s) skipped (use --include-injected to keep)`)
     }
   }
   return { messages: all.length, sessions: perSession.length }
