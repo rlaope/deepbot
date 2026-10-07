@@ -1,0 +1,22 @@
+name: test
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  unit:
+    name: unit tests (no harness required)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      # These drive apply() against mocks: a fake context, a fake WebSocket and a
+      # fake fetch. They need no harness installation, which is why they run here.
+      - run: node test/reconnect.test.mjs
+      - run: node test/delivery.test.mjs
+      # The scenario harness (test/run-scenario.mjs) boots a real profile and is
+      # deliberately NOT run here: it needs a harness installation and a model
+      # credential. Run it locally; PLAN.md explains why it exists.

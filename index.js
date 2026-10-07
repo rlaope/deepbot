@@ -315,6 +315,46 @@ export function apply(ctx, config) {
     }))
   }
 
+  // ── Agent-initiated delivery ──────────────────────────────────────────────
+  /**
+   * Deliver messages the agent produces on its own.
+   *
+   * A scheduled reminder is delivered as a follow-up into the original Session,
+   * which makes the agent take a turn and write an assistant message — and
+   * nothing else in this composition answers to that. Without this watcher a
+   * reminder fires, the agent does the work, and Slack sees nothing.
+   *
+   * The discriminator is `activeTurns`: anything the plugin is driving right now
+   * is already delivered by `runTurn`. An assistant message on a mapped session
+   * outside that set came from the agent itself.
+   */
+  const activeTurns = new Set()
+  let deliveryWatcher = null
+
+  function startDeliveryWatcher() {
+    if (deliveryWatcher !== null || typeof ctx.on !== 'function') return
+    deliveryWatcher = ctx.on('session/event', (session, event) => {
+      try {
+        if (event?.type !== 'assistant/message') return
+        const sessionId = session?.header?.id ?? session?.id
+        if (typeof sessionId !== 'string' || activeTurns.has(sessionId)) return
+        const key = Object.keys(state.sessions).find((k) => state.sessions[k] === sessionId)
+        if (key === undefined) return
+        const text = (event.data?.message?.content ?? [])
+          .filter((b) => b.type === 'text').map((b) => b.text).join('').trim()
+        if (text === '') return
+        const separator = key.indexOf(':')
+        const channel = key.slice(0, separator)
+        const threadTs = key.slice(separator + 1)
+        health.delivered = (health.delivered ?? 0) + 1
+        writeHealth()
+        if (botToken === null) { log(`agent-initiated message in ${sessionId} — no Slack client (scenario mode), not delivered`); return }
+        log(`agent-initiated message in ${sessionId} — delivering to ${channel}`)
+        say(botToken, channel, threadTs, toSlackMarkdown(text)).catch((e) => log('agent-initiated delivery failed', String(e?.message ?? e)))
+      } catch (e) { log('delivery watcher error', String(e?.message ?? e)) }
+    })
+  }
+
   // ── Drive one turn ────────────────────────────────────────────────────────
   /**
    * Create a session (or resume one) and drive it to completion.
@@ -383,12 +423,12 @@ export function apply(ctx, config) {
     const meta = { cwd: sessionCwdPath, ...(presetId !== null ? { agentPreset: presetId } : {}) }
 
     let handle
-    let sessionId = existingSessionId
+    let sessionId = existingSessionId ?? `slack-${randomUUID()}`   // stands in for brandString(...)
+    activeTurns.add(sessionId)
     try {
       if (existingSessionId) {
         handle = await agents.resume({ resumeSessionId: existingSessionId, agentOptions, setup })
       } else {
-        sessionId = `slack-${randomUUID()}`           // stands in for brandString(...)
         handle = await agents.create({ sessionId, meta, agentOptions, setup })
       }
     } catch (e) {
@@ -429,6 +469,7 @@ export function apply(ctx, config) {
       // Release the agent after every turn. The log is persisted, so the next
       // turn can resume; keeping it alive would pile one agent per thread into
       // memory.
+      activeTurns.delete(sessionId)
       try { await handle.dispose?.() } catch (e) { log('dispose failed', String(e)) }
       try { await scope?.[Symbol.asyncDispose]?.() } catch (e) { log('preset scope dispose failed', String(e)) }
     }
@@ -857,6 +898,7 @@ export function apply(ctx, config) {
   ctx.effect(() => {
     startWithRetry()
     startWatchdog()
+    startDeliveryWatcher()
     writeHealth()
     if (healthTimer === null) healthTimer = setInterval(writeHealth, cfg.heartbeatMs)
     return () => {
