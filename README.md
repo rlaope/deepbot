@@ -39,13 +39,18 @@ Both are drafts until their open decisions are answered.
 
 | Area | State |
 |---|---|
-| In-process session create + **resume** (multi-turn) | ✅ verified on a live workspace |
-| Slack Socket Mode receive/reply, threads, chunking | ✅ verified |
-| Duplicate-event suppression, reconnect with backoff | ✅ implemented (dup path unit-checked) |
-| Live one-to-one replacement of a production bot | ✅ done once, end to end |
-| Cross-session **recall** | ❌ **not implemented** — the harness ships the search service but no consumer in the agent plane. See [docs/limitations.md](docs/limitations.md) |
+| In-process session create + **resume** (multi-turn) | ✅ verified live |
+| Slack Socket Mode receive/reply, threads, chunking | ✅ verified live |
+| Duplicate-event suppression, reconnect with backoff | ✅ retries forever; regression tested |
+| **Cross-session memory** (write notes, recall with dates, admit ignorance) | ✅ verified by `test/run-scenario.mjs` — 5/5, cold, on a fresh home |
+| **Never silently dead** (health probe, self-heal, alert) | ✅ verified by injecting an unhealthy state: restart → recovered |
+| **Scheduled reminders delivered to Slack** | ✅ delivery path unit-tested (8/8) |
+| **Watches** ("tell me when this changes") | ✅ 16/16 unit, verified live with a real DM |
+| Sessions composed with an agent preset (the agent has tools) | ✅ verified — this was missing and made every other failure look like a memory bug |
+| Install from the repository alone | ✅ verified: profile from `profile/` + one install command → 5/5 |
 | Attachments / images from Slack | ❌ not implemented |
 | Streaming progress into Slack | ❌ posts the finished turn only |
+| Read-scope isolation between instances | ❌ reads are not sandboxed; see [SPEC.md](SPEC.md) §8 |
 
 Built and tested against DeepSeek Harness `0.2.0-rc.2`. The plugin calls a few
 services whose public-contract status is uncertain — see
@@ -92,6 +97,13 @@ Three layers, all in this repo:
 > migrating from another bot, stop the old process before starting this one.
 
 ## Install
+
+Tests that need no harness (run these first; CI runs them too):
+
+```bash
+npm test                      # reconnect 5/5, delivery 8/8, watches 16/16
+node test/run-scenario.mjs    # boots a real profile; needs a model credential
+```
 
 ```bash
 # 1) create the gateway profile

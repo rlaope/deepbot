@@ -129,6 +129,15 @@ Requirements that came directly from a real outage:
 - **One owner per FTS index path.**
 - **macOS TCC:** `launchd` cannot read `~/Documents`.
 - **Sandbox:** agent writes are confined to its home (`workspace-write`), fail-closed.
+- **Reads are NOT confined.** The file sandbox fences mutations; reads pass through.
+  Measured during a fresh-install test: the agent named `~/dsh-agent/memory/` — a
+  *different* agent home — while reasoning about where it had looked. Nothing was
+  leaked there, and its answer came from its own home, but the capability exists.
+  This directly weakens the split-operation decision in §4: two instances on one
+  OS user can read each other's memories. Mitigations, none implemented yet:
+  a separate OS user per instance, an explicit read-scope policy if the harness
+  grows one, or accepting it and keeping the two instances' homes unguessable.
+  Recorded here because a privacy boundary that is only a convention is not one.
 
 ## 9. Success criteria
 

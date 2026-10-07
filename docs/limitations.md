@@ -36,6 +36,12 @@ decision with a cost.
   the Socket Mode protocol; no live network interruption was induced.
 - **Attachment/thread edge cases.** Only plain threaded text has been exercised.
 
+- **Reads are not sandboxed.** Writes are confined to the agent home; reads are
+  not. A fresh-install test showed the agent naming another agent's home while
+  deciding where it had looked. Two instances on one OS user can therefore read
+  each other's memories, which is a real caveat on the split-operation decision.
+  Not fixed.
+
 ## Design risks
 
 - **Non-public harness APIs.** Session driving, message construction, and the
