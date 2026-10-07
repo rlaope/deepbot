@@ -31,7 +31,7 @@ Order matters: when two conflict, the higher one wins.
 | **G2** | **Be reliably present.** Survives reboot, network loss, harness restart. Never silently dead. | An agent that is sometimes absent is worse than no agent: it teaches the owner not to trust it. |
 | **G3** | **Be reachable where the owner already is.** Slack today; the adapter is not Slack-specific. | Zero-friction access. A tool you have to visit does not get used. |
 | **G4** | **Act without being asked, within a stated boundary.** Scheduled reminders, watching something, pursuing a long objective. | This is what separates an agent from a search box. Costs safety, so it is below G1–G3. |
-| **G5** | **Be reproducible.** Someone else can install it from the repository. | Determines whether it is a personal script or a project. ⚠️ DECIDE |
+| **G5** | **Be reproducible.** Someone else can install it from the repository. | ✅ DECIDED: this is a real public project, so tests and version pinning are in scope. |
 | **G6** | **Be safe by construction.** Sandboxed writes, explicit approval for destructive acts, secrets never stored. | A constraint on all of the above, not a feature. |
 
 ### Non-goals
@@ -43,15 +43,21 @@ Order matters: when two conflict, the higher one wins.
 
 ## 4. Users
 
-⚠️ **DECIDE.** Today there are two populations and they want different things:
+✅ **DECIDED: split operation.** Two populations exist and they get separate
+instances — separate Slack apps, separate profiles, separate memory, separate
+indexes. Today's live instance is the company bot; the personal agent is a
+second instance, not a mode of the first.
 
 | Population | What they need | Tension |
 |---|---|---|
 | **The owner** (one person) | personal memory, autonomy, low ceremony | Wants to remember everything about them |
 | **Colleagues** (a company Slack workspace) | a shared assistant: answer questions, run chores | Must **not** see the owner's personal context, and the owner must not have their private recalls leaking into channels |
 
-This boundary is the single most consequential decision in the spec, because it
-determines the memory scope, the identity model, and the approval policy.
+Why split rather than share one instance: the session store, the recall index and
+the instruction chain are **per process**, and the failure mode of sharing is
+silent — personal context leaking into a company channel is not recoverable after
+the fact. The cost is duplication: two Slack apps, two services, two indexes. The
+shared code stays shared (this repository), the *state* does not.
 
 ## 5. Memory model
 
@@ -79,9 +85,11 @@ in the harness; the **state** column is honest about what works today.
 
 - Keyword search over the index first; the agent must search before saying "not found".
 - The index is **content, not instructions** — nothing in it grants permission.
-- ⚠️ DECIDE: automatic injection of relevant past context at prompt time, vs the
-  agent deciding to search. Automatic is friendlier; deciding is cheaper and more
-  predictable.
+- ✅ **DECIDED: both.** Relevant past context is injected automatically at prompt
+  time, and the agent may also search on its own when the injection is not enough.
+  Injection is bounded and clearly delimited; injected text is marked as content,
+  not instructions. The search path stays because injection cannot know what it
+  missed.
 
 ## 6. Presence and failure
 
@@ -102,8 +110,9 @@ Requirements that came directly from a real outage:
 | Write inside the agent home | yes | sandbox root |
 | Write outside the agent home | no | sandbox blocks it anyway |
 | Post to Slack in a thread it was addressed in | yes | that is the conversation |
-| Post to a channel unprompted | ⚠️ DECIDE | this is where an agent becomes annoying |
+| Post to a channel unprompted | only for a watch the owner asked for | ✅ DECIDED: monitoring and conditional alerts are in scope, but every unprompted post traces back to an explicit request |
 | Run commands with side effects (deploy, send, spend) | no | must ask |
+| Watch a condition and report when it changes | yes, if the owner asked | ✅ DECIDED: this is the requested autonomy level |
 | Delete anything | no | must ask |
 
 ## 8. Constraints (discovered, non-negotiable)
@@ -136,9 +145,19 @@ Falsifiable, so "working" is not a matter of opinion:
 
 ## 10. Open decisions
 
-1. **Who are the users?** personal only / company too / open-source distribution.
-2. **Memory boundary** between personal and work contexts.
-3. **Autonomy level** and whether unprompted channel posts are allowed.
-4. **Recall**: agent-initiated search vs automatic injection.
+Resolved (2026-10-07):
+
+1. ~~Who are the users?~~ → **split operation**: company instance and personal
+   instance, separate state. §4.
+2. ~~Memory boundary~~ → follows from 1: memories are per instance, never shared.
+3. ~~Autonomy level~~ → **monitoring and conditional alerts allowed**; unprompted
+   posts only for a watch the owner requested. §7.
+4. ~~Recall~~ → **both**: automatic bounded injection plus agent-initiated search. §5.
+6. ~~Distribution~~ → **a real public project**: tests, CI and harness version
+   pinning are in scope. §3 G5.
+
+Still open:
+
 5. **Retention**: does memory expire; is there a forget command.
-6. **Distribution**: is G5 (installable by others) real, or is this a private thing.
+7. **Watch semantics**: what a "condition" can be, how often it is checked, and
+   what stops a noisy watch from becoming spam.

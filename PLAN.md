@@ -117,22 +117,29 @@ one probe interval and produces one alert, not a storm of them.
 
 ---
 
-## M4 — Autonomy
+## M4 — Autonomy (scheduled + conditional alerts)
 
-**Goal:** SPEC G4, inside the boundary in SPEC §7.
+**Goal:** SPEC G4 and the decided autonomy level: reminders and watches, with
+unprompted posts only for a watch the owner asked for.
 
 - Scheduled reminders delivered into the original conversation.
-- A "watch this and tell me when it changes" primitive.
+- **A watch primitive**: "tell me when X changes". Needs a condition, a check
+  cadence, a change detector, and — critically — a **noise budget** so a flapping
+  condition does not become spam.
 - Long objectives that survive restarts.
 - Every autonomous action is logged, and the owner can see what it did and why.
 
-**Depends on:** M2 (an agent that acts but cannot remember why is a nuisance).
+**Acceptance criteria:** a watch fires exactly once when its condition changes and
+stays silent when it does not; a noisy condition is rate-limited and says so.
+
+**Depends on:** M2 (an agent that acts but cannot remember why is a nuisance) and
+M3 (a watch that cannot tell you it went blind is worse than no watch).
 
 ---
 
-## M5 — Distribution
+## M5 — Distribution (decided: it is a real project)
 
-**Goal:** SPEC S6. Only if SPEC's open decision 6 says this is a real project.
+**Goal:** SPEC S6 — someone else can install it from the repository.
 
 - Fresh-clone install from the README, verified on a clean machine or user.
 - Config entirely in the profile, no machine-specific paths in the repo.
@@ -147,6 +154,23 @@ Only if a second platform is actually wanted. Discord and Telegram are new
 adapters of the same shape, not a refactor — the adapter is already isolated.
 
 ---
+
+## Two instances, one codebase
+
+Decided in SPEC §4: the company bot and the personal agent are separate
+instances.
+
+| | company instance | personal instance |
+|---|---|---|
+| Slack app | existing `@hermes` | its own app, its own identity |
+| profile | `agent` | `agent-personal` |
+| agent home | `~/dsh-agent` | separate |
+| memory + recall index | its own | its own |
+| service label | `ai.deepbot.gateway` | its own |
+
+This repository ships the code for both. A shared `agent-test` profile with its
+own state directory and index path exists for the test harness, so tests never
+touch either live instance.
 
 ## Sequencing summary
 
