@@ -116,8 +116,8 @@ dsh plugin --profile agent add /absolute/path/to/deepbot
 
 # 3) provide credentials (chosen by the credential service, never by this code)
 cat >> "$DSH_HOME/.env" <<'EOF'
-SLACK_BOT_TOKEN=xoxb-your-token
-SLACK_APP_TOKEN=xapp-your-token
+SLACK_BOT_TOKEN=xoxb-<your-bot-token>
+SLACK_APP_TOKEN=xapp-<your-app-token>
 EOF
 chmod 600 "$DSH_HOME/.env"
 

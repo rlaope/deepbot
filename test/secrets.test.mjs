@@ -12,6 +12,16 @@ import { readdirSync, readFileSync, statSync, existsSync } from 'node:fs'
 import { join } from 'node:path'
 import { homedir } from 'node:os'
 
+// Placeholders are not leaks. The scan matches token SHAPES, and documentation
+// legitimately contains things like `xoxb-REPLACE_ME`. Skipping an obvious
+// placeholder keeps the check strict about real values without making every doc
+// edit look like an incident.
+const PLACEHOLDER = /(your|replace|example|sample|placeholder|redacted|xxx|todo|\.\.\.)/i
+const NEGATIVE = /xox[baprs]-(REPLACE|redact)|<your-|…/
+function isPlaceholder(match) {
+  return PLACEHOLDER.test(match) || NEGATIVE.test(match)
+}
+
 const PATTERNS = [
   [/xox[baprs]-[A-Za-z0-9-]{10,}/, 'Slack token'],
   [/xapp-[A-Za-z0-9-]{10,}/, 'Slack app token'],
@@ -41,7 +51,8 @@ function walk(path) {
   try { text = readFileSync(path, 'utf8') } catch { return }
   scanned++
   for (const [pattern, label] of PATTERNS) {
-    if (pattern.test(text)) hits.push(`${path}: ${label}`)
+    const match = text.match(pattern)
+    if (match && !isPlaceholder(match[0])) hits.push(`${path}: ${label} (${match[0].slice(0, 12)}…)`)
   }
 }
 for (const root of roots) { if (existsSync(root)) walk(root) }
