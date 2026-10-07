@@ -8,7 +8,14 @@
     ".": "./index.js",
     "./package.json": "./package.json"
   },
-  "files": ["index.js", "cordis.patch.yml", "profile", "agent", "service", "docs"],
+  "files": [
+    "index.js",
+    "cordis.patch.yml",
+    "profile",
+    "agent",
+    "service",
+    "docs"
+  ],
   "keywords": [
     "deepseek",
     "deepseek-harness",
@@ -24,8 +31,15 @@
     "type": "git",
     "url": "git+https://github.com/rlaope/deepbot.git"
   },
-  "engines": { "node": ">=22" },
+  "engines": {
+    "node": ">=22"
+  },
   "dsh": {
-    "bundle": { "patch": "./cordis.patch.yml" }
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    }
+  },
+  "scripts": {
+    "test": "node test/reconnect.test.mjs"
   }
 }
