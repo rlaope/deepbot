@@ -1,0 +1,34 @@
+{
+  "_comment": "M2 acceptance, S1 and S2. A fact stated in one conversation must be recallable from another, and a fact never stated must not be invented. The rebuildIndex step exists because recall depends on a host-side index that is otherwise refreshed on a timer.",
+  "steps": [
+    {
+      "session": "A",
+      "say": "내가 좋아하는 음식은 국밥이야. 기억해둬."
+    },
+    {
+      "session": "A",
+      "say": "그리고 내가 싫어하는 음식은 오이야."
+    },
+    {
+      "rebuildIndex": true
+    },
+    {
+      "session": "B",
+      "say": "내가 좋아하는 음식이 뭐였지?",
+      "expectContains": "국밥",
+      "expectToolUse": [
+        "bash",
+        "grep",
+        "read",
+        "glob",
+        "fs_read",
+        "fs_grep"
+      ]
+    },
+    {
+      "session": "B",
+      "say": "내가 십이지장궤양에 걸린 적 있어?",
+      "expectNotContains": "국밥"
+    }
+  ]
+}

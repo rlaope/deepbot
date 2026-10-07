@@ -44,6 +44,7 @@
  * "session event at seq N lacks an identified message" and resume breaks.
  */
 
+import { execFile } from 'node:child_process'
 import { randomUUID } from 'node:crypto'
 import { appendFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
@@ -85,6 +86,13 @@ const DEFAULTS = {
   // and never touch Slack. This is the only way to exercise in-process session
   // creation without opening a Socket Mode connection.
   selfTest: undefined,
+  // Scenario mode (the test harness). A JSON file of steps executed against the
+  // real services, with assertions. Nothing here touches Slack. This exists so
+  // memory can be verified by a command instead of by a human typing in Slack.
+  selfTestScript: process.env.DEEPBOT_SELF_TEST_SCRIPT ?? undefined,
+  // The host-side indexer, used by a `rebuildIndex` scenario step. Without it a
+  // recall test would depend on the periodic refresh job's timing.
+  recallScript: process.env.DEEPBOT_RECALL_SCRIPT ?? undefined,
 }
 
 export function apply(ctx, config) {
@@ -303,7 +311,7 @@ export function apply(ctx, config) {
       await agent.whenIdle()
       await sessions.flush(agent.session)
       const outcome = summarize(agent.session, firstSeq)
-      return { text: outcome.text, reason: outcome.reason, sessionId }
+      return { text: outcome.text, reason: outcome.reason, toolsUsed: outcome.toolsUsed, sessionId }
     } finally {
       // Release the agent after every turn. The log is persisted, so the next
       // turn can resume; keeping it alive would pile one agent per thread into
@@ -320,6 +328,10 @@ export function apply(ctx, config) {
     let started = false
     let text = ''
     let reason
+    // Tool names invoked in the owned interval. The test harness asserts on this:
+    // a model can claim it lacks a tool, or write a fake tool-call as text, and a
+    // text-only assertion would happily pass on that refusal.
+    const toolsUsed = []
     const length = session.seq
     for (let seq = firstSeq; seq < length; seq++) {
       const event = session.eventAt(seq)
@@ -333,9 +345,13 @@ export function apply(ctx, config) {
           .join('')
         if (joined !== '') text = joined
       }
+      if (event.type === 'tool/call') {
+        const name = event.data?.name ?? event.data?.toolName ?? event.data?.call?.name
+        if (typeof name === 'string') toolsUsed.push(name)
+      }
       if (event.type === 'turn/end') reason = event.data?.reason
     }
-    return { text, reason }
+    return { text, reason, toolsUsed }
   }
 
   // ── Slack Web API (built-in fetch) ────────────────────────────────────────
@@ -542,7 +558,92 @@ export function apply(ctx, config) {
     })
   }
 
+  // ── Scenario runner (test harness) ────────────────────────────────────────
+  /**
+   * Run a scenario file against the real services.
+   *
+   * Steps:
+   *   { "session": "A", "say": "…", "expectContains": "…", "expectNotContains": "…" }
+   *   { "rebuildIndex": true }
+   *
+   * `session` is a scenario-local name, not a session id: the runner keeps the
+   * mapping so a second step in the same name continues the same conversation.
+   * A failing expectation makes the run fail; the runner writes
+   * `scenario-result.json` next to the state for an orchestrator to read.
+   *
+   * Deliberately does NOT connect to Slack — that is what makes it safe to run
+   * while the live instance is serving.
+   */
+  function rebuildIndex() {
+    const script = cfg.recallScript
+    if (!script) return Promise.reject(new Error('a rebuildIndex step needs recallScript (DEEPBOT_RECALL_SCRIPT)'))
+    return sessionCwd().then((cwd) => new Promise((resolve, reject) => {
+      execFile(process.execPath, [script, 'index', '--quiet'],
+        { env: { ...process.env, DEEPBOT_HOME: cwd }, timeout: 120000 },
+        (err, _stdout, stderr) => err ? reject(new Error(`${err.message}${stderr ? ` — ${stderr}` : ''}`)) : resolve())
+    }))
+  }
+
+  async function runScenario(scriptPath) {
+    const steps = JSON.parse(readFileSync(scriptPath, 'utf8')).steps ?? []
+    const sessions = {}
+    const results = []
+    let failed = 0
+    log(`scenario start — ${steps.length} step(s) from ${scriptPath}`)
+
+    for (const [index, step] of steps.entries()) {
+      const n = index + 1
+      if (step.rebuildIndex === true) {
+        try {
+          await rebuildIndex()
+          results.push({ step: n, kind: 'rebuildIndex', ok: true })
+          log(`  step ${n}: recall index rebuilt`)
+        } catch (e) {
+          failed++
+          results.push({ step: n, kind: 'rebuildIndex', ok: false, error: String(e?.message ?? e) })
+          log(`  step ${n}: index rebuild FAILED — ${String(e?.message ?? e)}`)
+        }
+        continue
+      }
+      const name = step.session ?? 'default'
+      try {
+        const r = await withTimeout(runTurn(step.say, sessions[name]), cfg.runTimeoutMs)
+        if (r.sessionId) sessions[name] = r.sessionId
+        const text = r.text ?? ''
+        const checks = []
+        if (step.expectContains !== undefined) checks.push({ what: `contains ${JSON.stringify(step.expectContains)}`, ok: text.includes(step.expectContains) })
+        if (step.expectNotContains !== undefined) checks.push({ what: `not contains ${JSON.stringify(step.expectNotContains)}`, ok: !text.includes(step.expectNotContains) })
+        if (Array.isArray(step.expectToolUse) && step.expectToolUse.length > 0) {
+          const used = r.toolsUsed ?? []
+          const hit = step.expectToolUse.some((t) => used.includes(t))
+          checks.push({ what: `used one of ${step.expectToolUse.join('/')} (saw: ${used.join('/') || 'none'})`, ok: hit })
+        }
+        const failedChecks = checks.filter((c) => !c.ok)
+        const ok = r.reason?.kind === 'completed' && failedChecks.length === 0
+        if (!ok) failed++
+        results.push({ step: n, kind: 'turn', session: name, say: step.say, reason: r.reason?.kind, text, toolsUsed: r.toolsUsed ?? [], ok, failedChecks })
+        log(`  step ${n} [${name}] ${ok ? 'PASS' : 'FAIL'}${ok ? '' : ` (${[...failedChecks.map((c) => c.what), r.reason?.kind !== 'completed' ? `reason=${r.reason?.kind}` : ''].filter(Boolean).join(', ')})`}: ${JSON.stringify(text.slice(0, 240))}`)
+      } catch (e) {
+        failed++
+        results.push({ step: n, kind: 'turn', session: name, say: step.say, ok: false, error: String(e?.message ?? e) })
+        log(`  step ${n} [${name}] ERROR — ${String(e?.message ?? e)}`)
+      }
+    }
+
+    const out = { scenario: scriptPath, cwd: await sessionCwd(), total: results.length, failed, steps: results, finishedAt: Date.now() }
+    try { writeFileSync(join(stateDir, 'scenario-result.json'), JSON.stringify(out, null, 1)) } catch (e) { log('could not write scenario-result.json', String(e)) }
+    log(`scenario done — ${results.length - failed}/${results.length} step(s) passed`)
+    return out
+  }
+
   async function start() {
+    // ── Scenario mode: the test harness ────────────────────────────────────
+    if (typeof cfg.selfTestScript === 'string' && cfg.selfTestScript.trim() !== '') {
+      try { await runScenario(cfg.selfTestScript) }
+      catch (e) { log(`scenario failed to run: ${String(e?.stack ?? e)}`) }
+      return
+    }
+
     // ── Diagnostic mode: exercise in-process session driving without Slack ──
     if (typeof cfg.selfTest === 'string' && cfg.selfTest.trim() !== '') {
       const cwd = await sessionCwd()
