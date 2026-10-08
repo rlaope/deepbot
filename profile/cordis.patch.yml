@@ -89,6 +89,12 @@
 - insert:
     - id: skill-office
       name: '@deepseek-ai/dsh-skill-office'
+      config:
+        # Electron-packaged runtimes throw in this provider unless a standalone
+        # Node executable is named: (isSea() || process.versions.electron) is true
+        # here. Without it the row fails to activate and the bot silently loses
+        # the document workflows, the structural checks, and the LibreOffice paths.
+        node: !!js process.env.DEEPBOT_NODE ?? dshHomePath('dsh-runtimes/dsh-primary-runtime/dependencies/node/bin/node')
 
     - id: tool-workspace-dependencies
       name: '@deepseek-ai/dsh-tool-workspace-dependencies'

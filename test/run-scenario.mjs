@@ -134,6 +134,20 @@ if (!keep && dumpFile === undefined) rmSync(TEST_HOME, { recursive: true, force:
 }
 
 const result = JSON.parse(readFileSync(RESULT, 'utf8'))
+
+// Surface loader warnings. A row that fails to activate is logged once at boot
+// and then behaves like a feature that was never configured — which is how the
+// office skill sat inactive while documents appeared to work. Fail loudly here.
+const loaderIssues = childOutput
+  .split('\n')
+  .filter((l) => /did not activate|Error:|not allowed|WARNING/.test(l))
+  .filter((l) => !/DeprecationWarning|trace-deprecation|task_name_for_pid/.test(l))
+if (loaderIssues.length > 0) {
+  console.log('--- loader warnings ---')
+  for (const line of loaderIssues.slice(0, 10)) console.log(`  ${line.trim().slice(0, 160)}`)
+  console.log()
+}
+
 console.log('--- steps ---')
 for (const step of result.steps) {
   const label = step.kind === 'rebuildIndex' ? 'rebuildIndex' : `${step.session}: ${JSON.stringify(step.say ?? '').slice(0, 60)}`

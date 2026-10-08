@@ -62,6 +62,16 @@ cp "$DIR/run-gateway.sh" "$RUNTIME_DIR/run-gateway.sh"
 chmod +x "$RUNTIME_DIR/run-gateway.sh"
 echo "✅ runtime copy: $RUNTIME_DIR/run-gateway.sh"
 
+# 1b) read-isolation profile, generated for THIS instance.
+#     It denies reads of every other agent home and of retired bots' data. Its own
+#     home is deliberately absent from the deny list.
+WRITE_READ_PROFILE="$DIR/write-read-profile.sh"
+if [ -x "$WRITE_READ_PROFILE" ]; then
+  "$WRITE_READ_PROFILE" "$RUNTIME_DIR/read-isolation.sb" "$AGENT_HOME" | sed 's/^/   /'
+else
+  echo "   ⚠️ write-read-profile.sh not found — reads will not be confined"
+fi
+
 # 2) plist
 cat > "$PLIST" <<PLIST_EOF
 <?xml version="1.0" encoding="UTF-8"?>
