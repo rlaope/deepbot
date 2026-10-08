@@ -1,0 +1,44 @@
+{
+  "_comment": "Acceptance for immediate EPISODIC recall: something said in one conversation must be findable from another without waiting for a timer. The fact is explicitly marked 'do not save', so the semantic notes path cannot satisfy it and only the recall index can.",
+  "steps": [
+    {
+      "session": "A",
+      "say": "내가 지금 '테스트-1234' 라고 말했어. 이건 확인용이니까 memory/ 에는 저장하지 마."
+    },
+    {
+      "session": "B",
+      "say": "다른 대화에서 확인할 게 있어. 누군가 '테스트-1234' 라고 말한 적 있어? memory/recall-index.jsonl 을 검색해서 확인해줘. 없으면 '없음'이라고 답해.",
+      "expectContains": "테스트-1234",
+      "expectNotAnyOf": [
+        "파일 자체가 없",
+        "존재하지 않",
+        "비어 있고",
+        "No such file",
+        "not exist",
+        "인덱스가 만들어지지"
+      ]
+    },
+    {
+      "_why": "The mechanism itself: the index must already contain a fact from a turn that just happened.",
+      "expectFile": {
+        "path": "memory/recall-index.jsonl",
+        "contains": "테스트-1234"
+      }
+    },
+    {
+      "_why": "The index must hold the user's own words, not the adapter's injected preamble. Before this gate, every turn re-indexed the full instruction text and the channel transcript.",
+      "expectFile": {
+        "path": "memory/recall-index.jsonl",
+        "contains": "테스트-1234",
+        "notContains": "[operating instructions"
+      }
+    },
+    {
+      "_why": "and not the injected file-scope note either",
+      "expectFile": {
+        "path": "memory/recall-index.jsonl",
+        "notContains": "[conversation so far"
+      }
+    }
+  ]
+}

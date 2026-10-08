@@ -138,6 +138,25 @@ const BOILERPLATE_PREFIXES = [
   'Background subagent ',
   '실패한 부분을 정확히 말하면',
 ]
+/**
+ * Strip this adapter's own injected preamble from a user message.
+ *
+ * The prompt carries instructions, channel history and file-scope notes ahead of
+ * the actual question, and the harness records the whole thing as one user
+ * message. Indexing that means every turn re-indexes the full instruction text
+ * and the channel transcript, so a search matches harness boilerplate and the
+ * same conversation appears many times. Measured: a search for a phrase the user
+ * had genuinely said returned matches "from the instruction block injected into
+ * this turn" and nothing that looked like speech.
+ *
+ * The adapter ends its preamble with this marker, so the marker is the boundary.
+ */
+const USER_MESSAGE_MARKER = '[user message]'
+function stripInjectedPreamble(text) {
+  const at = text.lastIndexOf(USER_MESSAGE_MARKER)
+  return at >= 0 ? text.slice(at + USER_MESSAGE_MARKER.length).trim() : text
+}
+
 function isBoilerplate(text) {
   return BOILERPLATE_PREFIXES.some((prefix) => text.startsWith(prefix))
 }
@@ -178,7 +197,8 @@ function readSession(file, sessionId, includeInjected) {
       const wanted = role === 'user' ? HUMAN_KINDS : MODEL_KINDS
       if (!wanted.has(kind)) { skippedInjected++; continue }
     }
-    const text = textOf(event)
+    let text = textOf(event)
+    if (role === 'user') text = stripInjectedPreamble(text)
     if (text === '') continue
     // Second gate for the shapes that carry no `source` at all.
     if (!includeInjected && isBoilerplate(text)) { skippedInjected++; continue }

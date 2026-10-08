@@ -47,7 +47,8 @@
 import { execFile } from 'node:child_process'
 import { randomUUID } from 'node:crypto'
 import { appendFileSync, existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from 'node:fs'
-import { join } from 'node:path'
+import { dirname, join } from 'node:path'
+import { fileURLToPath } from 'node:url'
 
 export const name = 'deepbot'
 
@@ -126,6 +127,11 @@ const DEFAULTS = {
   // The host-side indexer, used by a `rebuildIndex` scenario step. Without it a
   // recall test would depend on the periodic refresh job's timing.
   recallScript: process.env.DEEPBOT_RECALL_SCRIPT ?? undefined,
+  // Keep the episodic index current instead of waiting for the periodic job.
+  // Measured: the indexer costs ~0.4s for 61 session logs, so a per-turn refresh
+  // is affordable, and a 10-minute window makes "what did we just discuss?"
+  // fail in exactly the situation it is asked.
+  autoIndex: true,
 }
 
 export function apply(ctx, config) {
@@ -403,7 +409,9 @@ export function apply(ctx, config) {
         writeHealth()
         if (botToken === null) { log(`agent-initiated message in ${sessionId} — no Slack client (scenario mode), not delivered`); return }
         log(`agent-initiated message in ${sessionId} — delivering to ${channel}`)
-        say(botToken, channel, threadTs, toSlackMarkdown(text)).catch((e) => log('agent-initiated delivery failed', String(e?.message ?? e)))
+        say(botToken, channel, threadTs, toSlackMarkdown(text))
+          .then(() => refreshIndex('agent-initiated'))
+          .catch((e) => log('agent-initiated delivery failed', String(e?.message ?? e)))
       } catch (e) { log('delivery watcher error', String(e?.message ?? e)) }
     })
   }
@@ -535,6 +543,11 @@ export function apply(ctx, config) {
       agent.followup(userMessage(preamble === '' ? prompt : `${preamble}[user message]\n${prompt}`))
       await agent.whenIdle()
       await sessions.flush(agent.session)
+      // Refresh here, not in the Slack event handler: this is the one place every
+      // path passes through (Slack messages, the test harness, any other caller),
+      // and a refresh that only happens on one of them is a refresh that is
+      // missing when it matters.
+      void refreshIndex('turn')
       const outcome = summarize(agent.session, firstSeq)
       return { text: outcome.text, reason: outcome.reason, toolsUsed: outcome.toolsUsed, sessionId }
     } finally {
@@ -920,6 +933,46 @@ export function apply(ctx, config) {
    * Deliberately does NOT connect to Slack — that is what makes it safe to run
    * while the live instance is serving.
    */
+  const PLUGIN_DIR = dirname(fileURLToPath(import.meta.url))
+  let indexInFlight = false
+  let indexPending = false
+
+  /** Where the indexer lives: configured, or the sibling directory in this repo. */
+  function recallScriptPath() {
+    if (typeof cfg.recallScript === 'string' && cfg.recallScript !== '') return cfg.recallScript
+    // This file sits at the repository root, next to recall/.
+    return join(PLUGIN_DIR, 'recall', 'deepbot-recall.mjs')
+  }
+
+  /**
+   * Refresh the recall index in the background. Single-flight with one queued
+   * follow-up, so a burst of messages cannot pile up indexer processes.
+   */
+  async function refreshIndex(reason) {
+    if (cfg.autoIndex !== true) return
+    if (indexInFlight) { indexPending = true; return }
+    indexInFlight = true
+    try {
+      const script = recallScriptPath()
+      if (!existsSync(script)) { log(`auto-index: indexer not found at ${script}`); return }
+      const cwd = await sessionCwd()
+      await new Promise((resolve) => {
+        execFile(process.execPath, [script, 'index', '--quiet'],
+          { env: { ...process.env, DEEPBOT_HOME: cwd }, timeout: 120000 },
+          (err, _stdout, stderr) => {
+            if (err) log(`auto-index failed: ${String(err.message)}${stderr ? ` — ${String(stderr).slice(0, 200)}` : ''}`)
+            else log(`auto-index: refreshed after ${reason}`)
+            resolve()
+          })
+      })
+    } catch (e) {
+      log(`auto-index threw: ${String(e?.message ?? e)}`)
+    } finally {
+      indexInFlight = false
+      if (indexPending) { indexPending = false; setTimeout(() => { refreshIndex('queued') }, 250) }
+    }
+  }
+
   function rebuildIndex() {
     const script = cfg.recallScript
     if (!script) return Promise.reject(new Error('a rebuildIndex step needs recallScript (DEEPBOT_RECALL_SCRIPT)'))
@@ -983,6 +1036,7 @@ export function apply(ctx, config) {
           if (spec.minBytes !== undefined) checks.push({ what: `≥${spec.minBytes} bytes (saw ${stat.size})`, ok: stat.size >= spec.minBytes })
           if (spec.kind === 'zip') checks.push({ what: 'is a ZIP package', ok: bytes[0] === 0x50 && bytes[1] === 0x4b })
           if (spec.contains !== undefined) checks.push({ what: `contains ${JSON.stringify(spec.contains)}`, ok: bytes.includes(Buffer.from(spec.contains)) })
+          if (spec.notContains !== undefined) checks.push({ what: `does not contain ${JSON.stringify(spec.notContains)}`, ok: !bytes.includes(Buffer.from(spec.notContains)) })
           const bad = checks.filter((c) => !c.ok)
           if (bad.length > 0) failed++
           results.push({ step: n, kind: 'expectFile', path: spec.path, size: stat.size, ok: bad.length === 0, failedChecks: bad })
@@ -1026,6 +1080,12 @@ export function apply(ctx, config) {
         // "must admit it does not know", phrased as any-of: a not-contains check
         // cannot express it, because an honest answer may name the thing it is
         // declining to claim. Learned from a false failure on exactly that.
+        // "must NOT report a miss". A contains-check cannot tell "found it" from
+        // "named it while denying", which is how a failing search passed twice.
+        if (Array.isArray(step.expectNotAnyOf) && step.expectNotAnyOf.length > 0) {
+          const hit = step.expectNotAnyOf.find((phrase) => text.includes(phrase))
+          checks.push({ what: `does not report a miss (none of ${step.expectNotAnyOf.join(' / ')})`, ok: hit === undefined })
+        }
         if (Array.isArray(step.expectAnyOf) && step.expectAnyOf.length > 0) {
           const hit = step.expectAnyOf.find((phrase) => text.includes(phrase))
           checks.push({ what: `says it does not know (one of ${step.expectAnyOf.join(' / ')})`, ok: hit !== undefined })
@@ -1115,6 +1175,7 @@ export function apply(ctx, config) {
     log(`session cwd=${cwd}  state=${stateDir}  mapped sessions=${Object.keys(state.sessions).length}`)
     if (cfg.injectInstructions) {
       const probe = await contextPreamble()
+      log(`memory: auto-index=${cfg.autoIndex} indexer=${recallScriptPath()}`)
       log(`session composition: preset=${cfg.agentPreset} permission=${cfg.permissionPreset} workspace=${cfg.attachWorkspace ? 'attach' : 'none'}`)
       log(`context injection: ${probe.instructions} chars of instructions, ${probe.memory} chars of notes` +
         (probe.instructions === 0 ? ' — WARNING: no AGENTS.md/CLAUDE.md found in the session cwd' : ''))
