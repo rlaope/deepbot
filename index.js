@@ -46,7 +46,7 @@
 
 import { execFile } from 'node:child_process'
 import { randomUUID } from 'node:crypto'
-import { appendFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
+import { appendFileSync, existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 
 export const name = 'deepbot'
@@ -308,6 +308,15 @@ export function apply(ctx, config) {
         'then tell the user what you will watch and how often.',
       ].join('\n'))
     }
+
+    // Which directory is writable, stated plainly. Measured: asked to create a
+    // file in "홈 디렉터리", the agent read that as the OS home, correctly decided
+    // it was out of scope, and refused — right instinct, wrong map.
+    parts.push([
+      '[your files]',
+      `Your home is ${cwd}. Create and edit files there freely.`,
+      'Anything outside it needs the user to ask for it explicitly.',
+    ].join('\n'))
 
     if (typeof historyText === 'string' && historyText !== '') parts.push(historyText)
 
@@ -955,6 +964,33 @@ export function apply(ctx, config) {
           failed++
           results.push({ step: n, kind: 'expectSessionTurn', ok: false, error: String(e?.message ?? e) })
           log(`  step ${n}: session inspection FAILED — ${String(e?.message ?? e)}`)
+        }
+        continue
+      }
+      if (step.expectFile !== undefined) {
+        // Assert on the artifact itself. A model that describes a document it did
+        // not create reads exactly like one that did, and the difference only
+        // shows up when someone tries to open the file. For OOXML, checking for
+        // the ZIP magic plus an inner path proves it is a real package rather
+        // than a text file with a .docx name.
+        const spec = step.expectFile
+        const cwd = await sessionCwd()
+        const abs = join(cwd, spec.path)
+        try {
+          const stat = statSync(abs)
+          const bytes = readFileSync(abs)
+          const checks = []
+          if (spec.minBytes !== undefined) checks.push({ what: `≥${spec.minBytes} bytes (saw ${stat.size})`, ok: stat.size >= spec.minBytes })
+          if (spec.kind === 'zip') checks.push({ what: 'is a ZIP package', ok: bytes[0] === 0x50 && bytes[1] === 0x4b })
+          if (spec.contains !== undefined) checks.push({ what: `contains ${JSON.stringify(spec.contains)}`, ok: bytes.includes(Buffer.from(spec.contains)) })
+          const bad = checks.filter((c) => !c.ok)
+          if (bad.length > 0) failed++
+          results.push({ step: n, kind: 'expectFile', path: spec.path, size: stat.size, ok: bad.length === 0, failedChecks: bad })
+          log(`  step ${n}: file ${spec.path} — ${bad.length === 0 ? 'PASS' : 'FAIL'} (${stat.size} bytes${bad.length ? `, ${bad.map((c) => c.what).join(', ')}` : ''})`)
+        } catch (e) {
+          failed++
+          results.push({ step: n, kind: 'expectFile', path: spec.path, ok: false, error: String(e?.message ?? e) })
+          log(`  step ${n}: file ${spec.path} — FAIL (${String(e?.message ?? e)})`)
         }
         continue
       }

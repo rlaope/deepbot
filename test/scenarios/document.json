@@ -1,0 +1,40 @@
+{
+  "_comment": "Can the bot produce real document files? Assertions are on the artifacts: ZIP magic plus an inner OOXML path, which a text file with a .docx name cannot fake.",
+  "steps": [
+    {
+      "session": "D",
+      "say": "현재 작업 디렉터리(너의 홈)에 doc-test.docx Word 문서를 만들어줘. 내용은 '딥봇 문서 생성 테스트' 한 줄이면 충분해. 경로와 크기만 알려줘.",
+      "expectToolUse": [
+        "bash",
+        "load_workspace_dependencies"
+      ]
+    },
+    {
+      "expectFile": {
+        "path": "doc-test.docx",
+        "minBytes": 2000,
+        "kind": "zip",
+        "contains": "word/document.xml"
+      }
+    },
+    {
+      "session": "D",
+      "say": "같은 위치에 deck-test.pptx 발표자료도 만들어줘. 슬라이드 1장, 제목은 '딥봇 문서 생성 테스트'. 경로와 크기만 알려줘."
+    },
+    {
+      "expectFile": {
+        "path": "deck-test.pptx",
+        "minBytes": 2000,
+        "kind": "zip",
+        "contains": "ppt/presentation.xml"
+      }
+    },
+    {
+      "expectFile": {
+        "path": "deck-test.pptx",
+        "kind": "zip",
+        "contains": "[Content_Types].xml"
+      }
+    }
+  ]
+}

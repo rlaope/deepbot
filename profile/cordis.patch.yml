@@ -77,3 +77,23 @@
 #       - /absolute/path/to/skills
 #     includeDefaultRoots: true
 #     watch: true
+
+# ── Document authoring (optional, recommended for document work) ─────────────
+# dsh-skill-office is a plain package, so no shipped bundle mounts it. This row
+# puts office-docx / office-pptx / office-xlsx into the session skill catalog and
+# appends the absolute LibreOffice Kit paths to each loaded skill body.
+#
+# dsh-tool-workspace-dependencies tells the agent where the bundled Python lives.
+# The office provider ships instructions only; it does not install the authoring
+# libraries, so without this the skill is present and unusable.
+- insert:
+    - id: skill-office
+      name: '@deepseek-ai/dsh-skill-office'
+
+    - id: tool-workspace-dependencies
+      name: '@deepseek-ai/dsh-tool-workspace-dependencies'
+      config:
+        # Required, and required to be non-empty: an absolute payload directory
+        # holding runtime.json and dependencies/. Without it the row fails
+        # validation at boot, which is how this was found.
+        source: !!js process.env.DSH_PRIMARY_RUNTIME ?? '/Applications/DeepSeek Harness.app/Contents/Resources/runtime/primary-runtime'
