@@ -103,3 +103,17 @@
         # holding runtime.json and dependencies/. Without it the row fails
         # validation at boot, which is how this was found.
         source: !!js process.env.DSH_PRIMARY_RUNTIME ?? '/Applications/DeepSeek Harness.app/Contents/Resources/runtime/primary-runtime'
+
+# ── 승인 정책 ──────────────────────────────────────────────────
+# 기본값은 workspace-write 모드에서 policy=ask 다. 이 배포에는 승인을 물어볼
+# 사람이 없고(웹앱 번들의 승인 UI는 연결된 브라우저를 기다린다), 그 결과가
+# hang 이었다: 에이전트가 권한 상향을 요청하고 영원히 대기했다. 실측으로 확인한
+# 증상이다 — tool/result 는 "no sandbox backend is usable ... refusing to run
+# the command unconfined", 그리고 approval/asked 에 decided 가 오지 않음.
+#
+# never 는 대화형 디스패치 전에 결정적으로 거부하므로 무한 대기가 발생하지 않고,
+# 모델은 거부를 받아 스스로 다르게 시도하거나 불가능하다고 말할 수 있다.
+# 샌드박스가 경계이고, 상향은 없다.
+- id: approval
+  config:
+    policy: never

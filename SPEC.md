@@ -129,15 +129,20 @@ Requirements that came directly from a real outage:
 - **One owner per FTS index path.**
 - **macOS TCC:** `launchd` cannot read `~/Documents`.
 - **Sandbox:** agent writes are confined to its home (`workspace-write`), fail-closed.
-- **Reads are NOT confined.** The file sandbox fences mutations; reads pass through.
-  Measured during a fresh-install test: the agent named `~/dsh-agent/memory/` — a
-  *different* agent home — while reasoning about where it had looked. Nothing was
-  leaked there, and its answer came from its own home, but the capability exists.
-  This directly weakens the split-operation decision in §4: two instances on one
-  OS user can read each other's memories. Mitigations, none implemented yet:
-  a separate OS user per instance, an explicit read-scope policy if the harness
-  grows one, or accepting it and keeping the two instances' homes unguessable.
-  Recorded here because a privacy boundary that is only a convention is not one.
+- **Reads are NOT confined, and layering a profile outside the harness does not
+  work here.** The file sandbox fences mutations; reads pass through. An attempt to
+  wrap the whole gateway in a macOS Seatbelt profile that denied reads of other
+  instances' homes DID confine reads (4/4 on the isolation scenario) and BROKE the
+  harness's own sandbox: nested `sandbox-exec` is refused by macOS
+  (`sandbox_apply: Operation not permitted`), so the harness's functional probe
+  concluded "no sandbox backend is usable", refused to run bash at all, and the
+  agent responded by requesting an escalation to `danger-full-access` — a request
+  with no answerer, which hung the turn indefinitely. Verified, then reverted.
+  Read confinement therefore has to come from a sandbox *provider* (a plugin
+  implementing the sandbox seam with its own profile) or from a separate OS user
+  or container per instance. None of those are built. The split-operation decision
+  in §4 remains weakened: two instances under one OS user can read each other's
+  data.
 
 ## 9. Success criteria
 

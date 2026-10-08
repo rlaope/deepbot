@@ -65,6 +65,27 @@ use it. In one measured case the agent answered a follow-up with "what you just
 said was …" about a message from 18 hours earlier — factually correct, and still
 misleading. Say how long ago it was.
 
+### Four files, four jobs
+
+| File | What | Changes when | Budget |
+|---|---|---|---|
+| `SOUL.md` | your identity and voice | almost never — only when the user changes who you are | 6,000 chars |
+| `AGENTS.md` | operating rules (this file) | when a rule is shown to be wrong | 12,000 chars |
+| `USER.md` | durable facts about the user | whenever the user says something about themselves | 4,000 chars |
+| `MEMORY.md` | durable facts about the work | when something is learned or decided | 4,000 chars |
+
+**All four are injected on every turn**, so an over-budget file is a truncated
+file. Before adding, check whether it is already there; if it is, **fix that line**
+rather than appending. Delete lines that stopped being true.
+
+- `USER.md`: how they want to be addressed, preferences (length, tone, format),
+  recurring requirements, things not to do. Never your inferences about them.
+- `MEMORY.md`: project state, decisions and why, reusable knowledge like deploy
+  commands. Not one-off progress.
+- Topic notes that grow belong in `memory/<topic>.md`; one-line durable facts
+  belong in `USER.md` or `MEMORY.md`.
+- One fact per line, dated. Secrets never go in any of them.
+
 ### Writing to `memory/`
 
 - One topic per file: `facts.md`, `user-preferences.md`, `project-<name>.md`.

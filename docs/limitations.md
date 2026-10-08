@@ -36,11 +36,13 @@ decision with a cost.
   the Socket Mode protocol; no live network interruption was induced.
 - **Attachment/thread edge cases.** Only plain threaded text has been exercised.
 
-- **Reads are not sandboxed.** Writes are confined to the agent home; reads are
-  not. A fresh-install test showed the agent naming another agent's home while
-  deciding where it had looked. Two instances on one OS user can therefore read
-  each other's memories, which is a real caveat on the split-operation decision.
-  Not fixed.
+- **Reads are not sandboxed, and wrapping the gateway does not fix it.** Writes are
+  confined to the agent home; reads are not. A parallel Seatbelt profile around the
+  gateway did stop the reads and then broke everything else: macOS refuses nested
+  `sandbox-exec`, so the harness's sandbox probe found no usable backend, refused
+  to run bash at all, and the agent asked to escalate to `danger-full-access` —
+  which hung, because no approval answerer exists. Reverted. A sandbox provider
+  plugin or per-instance OS separation is the real fix; neither is built.
 
 ## Design risks
 
