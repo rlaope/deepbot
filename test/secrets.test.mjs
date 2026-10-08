@@ -12,24 +12,7 @@ import { readdirSync, readFileSync, statSync, existsSync } from 'node:fs'
 import { join } from 'node:path'
 import { homedir } from 'node:os'
 
-// Placeholders are not leaks. The scan matches token SHAPES, and documentation
-// legitimately contains things like `xoxb-REPLACE_ME`. Skipping an obvious
-// placeholder keeps the check strict about real values without making every doc
-// edit look like an incident.
-const PLACEHOLDER = /(your|replace|example|sample|placeholder|redacted|xxx|todo|\.\.\.)/i
-const NEGATIVE = /xox[baprs]-(REPLACE|redact)|<your-|…/
-function isPlaceholder(match) {
-  return PLACEHOLDER.test(match) || NEGATIVE.test(match)
-}
-
-const PATTERNS = [
-  [/xox[baprs]-[A-Za-z0-9-]{10,}/, 'Slack token'],
-  [/xapp-[A-Za-z0-9-]{10,}/, 'Slack app token'],
-  [/sk-[A-Za-z0-9]{20,}/, 'API key'],
-  [/gh[pous]_[A-Za-z0-9]{20,}/, 'GitHub token'],
-  [/-----BEGIN [A-Z ]*PRIVATE KEY-----/, 'private key'],
-  [/eyJ[A-Za-z0-9_-]{20,}\.[A-Za-z0-9_-]{20,}/, 'JWT'],
-]
+import { findSecrets } from '../tools/secret-patterns.mjs'
 
 const roots = process.argv.slice(2)
 if (roots.length === 0) roots.push(join(homedir(), 'dsh-agent'), join(homedir(), '.dsh', 'slack-state'))
@@ -50,10 +33,7 @@ function walk(path) {
   let text
   try { text = readFileSync(path, 'utf8') } catch { return }
   scanned++
-  for (const [pattern, label] of PATTERNS) {
-    const match = text.match(pattern)
-    if (match && !isPlaceholder(match[0])) hits.push(`${path}: ${label} (${match[0].slice(0, 12)}…)`)
-  }
+  for (const hit of findSecrets(text)) hits.push(`${path}: ${hit.label} (${hit.sample})`)
 }
 for (const root of roots) { if (existsSync(root)) walk(root) }
 

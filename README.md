@@ -107,24 +107,23 @@ node test/run-scenario.mjs    # boots a real profile; needs a model credential
 ```
 
 ```bash
-# 1) create the gateway profile
-cp -r profile "$DSH_HOME/profiles/agent"       # $DSH_HOME defaults to ~/.dsh
-#    and register the bundles in a fresh profile package.json if you renamed it
+# 1) create the agent home (persona files) and the gateway profile
+./init.sh                       # add --dry-run to see what it would do first
+#    ~/dsh-agent/  <- SOUL.md AGENTS.md USER.md MEMORY.md, memory/ state/
+#    ~/.dsh/profiles/agent/  <- the profile, with this repo registered as a bundle
+#    Re-running it keeps every file that already exists.
 
-# 2) install this repo as a bundle into that profile
-dsh plugin --profile agent add /absolute/path/to/deepbot
-
-# 3) provide credentials (chosen by the credential service, never by this code)
+# 2) provide credentials (chosen by the credential service, never by this code)
 cat >> "$DSH_HOME/.env" <<'EOF'
 SLACK_BOT_TOKEN=xoxb-<your-bot-token>
 SLACK_APP_TOKEN=xapp-<your-app-token>
 EOF
 chmod 600 "$DSH_HOME/.env"
 
-# 4) set the channels this agent may answer in
+# 3) set the channels this agent may answer in
 $EDITOR /absolute/path/to/deepbot/cordis.patch.yml   # targetChannels
 
-# 5) run it
+# 4) run it
 dsh --profile agent --port 19500 --no-open
 ```
 
@@ -137,6 +136,48 @@ Then, to make it survive reboots:
 ```bash
 service/install-service.sh            # launchd; auto-start + restart on exit
 service/install-service.sh --status
+```
+
+## Persona and memory
+
+Four files in the agent home decide who the agent is and what it remembers. All
+four are read at the start of **every** turn, in this order:
+
+| File | What it holds | Budget | Changes |
+|---|---|---|---|
+| `SOUL.md` | identity and voice | 6,000 chars | rarely |
+| `AGENTS.md` | operating rules | 12,000 chars | when a rule is wrong |
+| `USER.md` | durable facts about the user | 4,000 chars | as you learn them |
+| `MEMORY.md` | durable facts about the work | 4,000 chars | as you learn them |
+
+Topical notes that outgrow a line belong in `memory/<topic>.md`, which is injected
+in full as well.
+
+```bash
+./init.sh --home ~/my-agent            # scaffold all four from agent/*.md
+$EDITOR ~/my-agent/SOUL.md             # make it yours — this one matters most
+npm run persona -- ~/my-agent          # check it
+```
+
+```
+   SOUL.md      1879 /   6000  persona
+   AGENTS.md    3934 /  12000  operating rules
+   USER.md      1528 /   4000  facts about the user
+   MEMORY.md     296 /   4000  facts about the work
+
+  injected total    7637 /  26000
+```
+
+`npm run persona` exists because an over-budget file is **truncated silently**: the
+tail simply stops being part of the prompt, with nothing logged. It reports the
+exact overflow, warns when the same fact is written into two files (it would be
+injected twice), warns about undated lines, and refuses on a secret — a token in a
+persona file would otherwise be in every prompt and every session log.
+
+```
+Problems
+  - USER.md: 5120 chars against a 4000 budget — the last 1120 characters are cut
+    from every prompt. Trim it or move detail into memory/<topic>.md.
 ```
 
 ## Drive the agent without Slack (diagnostic)

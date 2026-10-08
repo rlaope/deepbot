@@ -40,13 +40,15 @@
     }
   },
   "scripts": {
-    "test": "node test/reconnect.test.mjs && node test/delivery.test.mjs && node test/history.test.mjs && node test/attachments.test.mjs && node test/watch.test.mjs && node test/secrets.test.mjs .",
+    "test": "node test/reconnect.test.mjs && node test/delivery.test.mjs && node test/history.test.mjs && node test/attachments.test.mjs && node test/persona-check.test.mjs && node test/watch.test.mjs && node test/secrets.test.mjs .",
     "test:scenario": "node test/run-scenario.mjs",
     "health": "node service/health-check.mjs --status",
     "test:restart": "node test/run-scenario.mjs test/scenarios/restart-1.json --dump /tmp/sessions.json && node test/run-scenario.mjs test/scenarios/restart-2.json --seed /tmp/sessions.json",
     "test:doc": "node test/run-scenario.mjs test/scenarios/document.json",
     "test:isolation": "node test/run-scenario.mjs test/scenarios/isolation.json",
     "test:immediate": "node test/run-scenario.mjs test/scenarios/recall-immediate.json",
-    "test:approval": "node test/run-scenario.mjs test/scenarios/approval.json"
+    "test:approval": "node test/run-scenario.mjs test/scenarios/approval.json",
+    "persona": "node tools/persona-check.mjs",
+    "init": "./init.sh"
   }
 }

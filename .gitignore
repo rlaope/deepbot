@@ -6,3 +6,5 @@ slack-state/
 .env.*
 .DS_Store
 attachments/
+memory/
+tools/**/*.tmp
