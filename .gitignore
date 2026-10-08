@@ -5,3 +5,4 @@ slack-state/
 .env
 .env.*
 .DS_Store
+attachments/

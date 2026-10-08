@@ -82,6 +82,7 @@ check('it went to the mapped channel', posted[0]?.channel === 'C_TEST', JSON.str
 check('it went into the mapped thread', posted[0]?.thread_ts === '1791999999.000100', JSON.stringify(posted[0]?.thread_ts))
 check('the text was carried through', String(posted[0]?.text ?? '').includes('리마인더'), JSON.stringify(posted[0]?.text ?? '').slice(0, 60))
 
+
 // An unmapped session must be ignored: the plugin has no thread to answer in.
 sessionEventHandler({ header: { id: 'slack-not-mapped' } }, {
   type: 'assistant/message',
@@ -94,6 +95,15 @@ check('an unmapped session is ignored', posted.length === 1, `${posted.length} p
 sessionEventHandler(session, { type: 'turn/start', data: { turn: 1 } })
 await sleep(150)
 check('non-assistant events are ignored', posted.length === 1, `${posted.length} post(s)`)
+
+// A long agent-initiated message is chunked; the first chunk replaces a progress
+// placeholder rather than adding a second message.
+posted.length = 0
+const long = 'x'.repeat(9000)
+sessionEventHandler(session, { type: 'assistant/message', data: { message: { content: [{ type: 'text', text: long }] } } })
+await sleep(400)
+const chips = posted.filter((p) => p.text)
+check('a long message is chunked', chips.length >= 3, `${chips.length} chunk(s)`)
 
 const log = readFileSync(join(stateDir, 'deepbot.log'), 'utf8')
 check('the delivery was logged', /agent-initiated message/.test(log))
