@@ -186,6 +186,21 @@ plus one `dsh plugin add <repo>` and a model route, passes the recall scenario
 
 ---
 
+## Documents (added after M5, driven by the product need)
+
+The product ships documents to users, so the bot must produce files, and it could
+not. `dsh-skill-office` is a plain package mounted by no shipped bundle, and the
+profile inserted nothing: the agent could describe a document and not create one.
+
+Fixed: the profile inserts `dsh-skill-office` (which registers office-docx,
+office-pptx and office-xlsx and appends the absolute LibreOffice Kit paths) and
+`dsh-tool-workspace-dependencies` (which locates the bundled Python carrying
+python-docx/pptx/openpyxl). The second row is required for the first to be usable.
+
+Verified by `test/scenarios/document.json` 5/5, asserting on the artifacts: ZIP
+magic plus an inner OOXML path. A model describing a document it never wrote reads
+exactly like one that did.
+
 ## M6 — Beyond Slack
 
 Only if a second platform is actually wanted. Discord and Telegram are new
