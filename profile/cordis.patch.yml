@@ -131,3 +131,27 @@
         sandbox: workspace-write
         approval: never
     defaultPreset: unattended
+
+# ── 지침 파일 (캐시 인식 주입) ──────────────────────────────────
+# dsh-agent-instructions 는 이 문제를 위해 만들어진 컴포넌트다:
+#   - baseline 을 "한 번만" 붙이고 derived history 에 남긴다
+#   - "Append-only; newly visible content follows the reusable request prefix and
+#     does not invalidate existing KV Cache entries"
+#   - SHA-1 digest 로 변경분만 추가하고, read/write/edit 시 갱신된다
+#
+# 손으로 매 턴 주입하면 같은 텍스트가 모든 과거 메시지에 쌓이고 프롬프트 앞부분이
+# 매번 달라진다. 그래서 상시 컨텍스트(SOUL/AGENTS/USER/MEMORY)는 이 컴포넌트에
+# 맡기고, 플러그인은 메시지마다 달라질 수밖에 없는 것만 넣는다.
+#
+# projectRootMarkers: 에이전트 홈에서 탐색을 멈춘다. 기본 마커(.git)가 없으면
+# 상위 디렉터리로 올라가며 남의 지침 파일까지 주워올 수 있다.
+- id: agent-instructions
+  config:
+    maxBytes: 131072
+    instructionFileCandidates:
+      - SOUL.md
+      - AGENTS.md
+      - USER.md
+      - MEMORY.md
+    projectRootMarkers:
+      - .deepbot-root

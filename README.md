@@ -180,6 +180,44 @@ Problems
     from every prompt. Trim it or move detail into memory/<topic>.md.
 ```
 
+## Prompt caching, and what gets injected
+
+Prompt caching reuses a stable prefix, so anything that changes early in the prompt
+throws away everything after it — and anything repeated every turn is paid for
+every turn. Two rules follow, and this adapter is built around them.
+
+**Standing context goes in once.** `SOUL.md`, `AGENTS.md`, `USER.md` and `MEMORY.md`
+are injected by `dsh-agent-instructions`, which appends them as one durable baseline,
+adds only deltas afterwards, and is written so new content does not invalidate
+existing KV cache entries. Do not re-inject them per turn: doing that duplicated
+`AGENTS.md` (measured: 7,625 characters per turn on top of the harness's own 3,634)
+and left a copy of every file in every historical turn.
+
+**Only the changing part is dynamic.** The adapter's own block — where this
+conversation is, which directory is writable, which topic notes exist — is
+digest-gated per session and sent only when its content changes. Thread messages are
+sent as a delta: only what has not been delivered yet, never the whole thread again.
+
+The budgets described above apply because all of it is re-sent or retained:
+
+```
+tokens: input 13416 (0% cache-read) uncached 13416 output 112
+tokens: input 29458 (45% cache-read) uncached 16146 output 131
+tokens: input 48031 (61% cache-read) uncached 18847 output 139
+```
+
+Three turns of one conversation. Each turn adds about 2.7K uncached tokens; the
+whole prefix before it is served from cache. The numbers come from the
+`tokenUsage` session projection — the raw session log carries no usage events, so
+this is where to look. They are printed after every turn.
+
+```
+context injection: standing block 217 chars; instruction files present: SOUL.md, AGENTS.md, USER.md, MEMORY.md
+```
+
+A home with none of those files logs a warning, because then the agent has no
+standing context at all — which is silent otherwise.
+
 ## Drive the agent without Slack (diagnostic)
 
 The plugin has a mode that exercises session create **and** resume in the gateway

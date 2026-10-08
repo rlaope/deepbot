@@ -43,6 +43,9 @@ echo "  agent home : $HOME_DIR"
 echo
 echo "1) agent home"
 run mkdir -p "$HOME_DIR/memory" "$HOME_DIR/state"
+# Marks this directory as the instruction-search root. Without it the loader climbs
+# to the filesystem boundary and can pick up instruction files that are not yours.
+run touch "$HOME_DIR/.deepbot-root"
 for file in SOUL.md AGENTS.md USER.md MEMORY.md; do
   if [ -e "$HOME_DIR/$file" ]; then
     echo "   keep    $file (already there)"

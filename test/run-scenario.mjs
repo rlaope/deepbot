@@ -80,6 +80,10 @@ console.log()
 // A test home mirrors the live one where it matters — the instruction file is
 // what tells the agent that a recall index exists at all.
 mkdirSync(TEST_HOME, { recursive: true })
+// Marks the instruction-search root. Without it dsh-agent-instructions
+// climbs toward the filesystem boundary and picks up instruction files that
+// belong to somebody else — measured: a bare temp home picked up ~/AGENTS.md.
+writeFileSync(join(TEST_HOME, '.deepbot-root'), '')
 for (const file of ['AGENTS.md', 'CLAUDE.md']) {
   const from = join(LIVE_HOME, file)
   if (existsSync(from)) cpSync(from, join(TEST_HOME, file))
