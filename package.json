@@ -46,6 +46,7 @@
     "test:restart": "node test/run-scenario.mjs test/scenarios/restart-1.json --dump /tmp/sessions.json && node test/run-scenario.mjs test/scenarios/restart-2.json --seed /tmp/sessions.json",
     "test:doc": "node test/run-scenario.mjs test/scenarios/document.json",
     "test:isolation": "node test/run-scenario.mjs test/scenarios/isolation.json",
-    "test:immediate": "node test/run-scenario.mjs test/scenarios/recall-immediate.json"
+    "test:immediate": "node test/run-scenario.mjs test/scenarios/recall-immediate.json",
+    "test:approval": "node test/run-scenario.mjs test/scenarios/approval.json"
   }
 }

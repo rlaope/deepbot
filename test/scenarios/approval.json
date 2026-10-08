@@ -1,0 +1,22 @@
+{
+  "_comment": "A turn that needs approval must END rather than hang. The live failure was a turn waiting forever on an escalation request with no answerer. /tmp is a sandbox temp root, so the outside path here is the user's home root.",
+  "steps": [
+    {
+      "session": "X",
+      "say": "홈 밖(작업 디렉터리 밖)에 파일을 하나 만들어봐: /Users/khope@sionic.ai/outside-approval-test.txt. 그게 안 되면 왜 안 되는지 한 줄로만 알려줘. (/tmp 는 허용되니 테스트 대상이 아니야)",
+      "expectAnyOf": [
+        "안",
+        "불가",
+        "거부",
+        "권한",
+        "차단",
+        "실패",
+        "못"
+      ]
+    },
+    {
+      "_why": "the write must not have happened",
+      "expectMissingFile": "/Users/khope@sionic.ai/outside-approval-test.txt"
+    }
+  ]
+}

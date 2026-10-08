@@ -142,7 +142,12 @@ const DEFAULTS = {
   // log it, and never open a Socket Mode connection.
   historyProbe: process.env.DEEPBOT_HISTORY_PROBE ?? undefined,
   agentPreset: 'standard',
-  permissionPreset: 'workspace-write',
+  // Unset by default: the deployment's own default governs. This adapter used to
+  // force 'workspace-write' on every session, which silently re-applied
+  // approval=ask over a profile that had deliberately chosen approval=never — and
+  // approval=ask with no answerer is how a turn hung forever. A bot should not
+  // overrule a permission decision the deployment made on purpose.
+  permissionPreset: undefined,
   attachWorkspace: true,
   // Diagnostic: run a single turn with this prompt at startup, log the result,
   // and never touch Slack. This is the only way to exercise in-process session
@@ -496,8 +501,14 @@ export function apply(ctx, config) {
     let presetId = null
     if (cfg.agentPreset) {
       if (!agentPresets) throw new Error('deepbot: agentPreset is configured but the agentPresets service is not composed — the agent would have no tools')
-      try { permissionPresets?.resolve?.(cfg.permissionPreset) }
-      catch (e) { throw new Error(`deepbot: unknown permission preset ${JSON.stringify(cfg.permissionPreset)} — ${String(e?.message ?? e)}`) }
+      // Only validate a preset this deployment actually named. Passing `undefined`
+      // through resolve() looks up the literal string "undefined" and throws, and
+      // leaving permissionPreset unset is the documented way to accept the
+      // deployment's own default.
+      if (cfg.permissionPreset !== undefined) {
+        try { permissionPresets?.resolve?.(cfg.permissionPreset) }
+        catch (e) { throw new Error(`deepbot: unknown permission preset ${JSON.stringify(cfg.permissionPreset)} — ${String(e?.message ?? e)}`) }
+      }
       try {
         const record = await agentPresets.resolve(cfg.agentPreset)
         presetId = record?.id ?? cfg.agentPreset
@@ -1133,6 +1144,15 @@ export function apply(ctx, config) {
           results.push({ step: n, kind: 'expectSessionTurn', ok: false, error: String(e?.message ?? e) })
           log(`  step ${n}: session inspection FAILED — ${String(e?.message ?? e)}`)
         }
+        continue
+      }
+      if (step.expectMissingFile !== undefined) {
+        const cwd = await sessionCwd()
+        const abs = step.expectMissingFile.startsWith('/') ? step.expectMissingFile : join(cwd, step.expectMissingFile)
+        const absent = !existsSync(abs)
+        if (!absent) failed++
+        results.push({ step: n, kind: 'expectMissingFile', path: step.expectMissingFile, ok: absent })
+        log(`  step ${n}: ${step.expectMissingFile} — ${absent ? 'PASS (absent)' : 'FAIL (it exists)'}`)
         continue
       }
       if (step.expectFile !== undefined) {
