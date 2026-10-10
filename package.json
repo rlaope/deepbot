@@ -1,6 +1,6 @@
 {
   "name": "deepbot",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "A standalone, always-on agent built on DeepSeek Harness. Slack Socket Mode platform adapter + durable sessions + a memory-ready gateway profile.",
   "type": "module",
   "license": "MIT",
