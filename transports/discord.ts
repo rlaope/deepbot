@@ -16,7 +16,7 @@
  *   repository has already had once.
  */
 import { writeAttachments, type AttachmentSource } from './attachments.js'
-import type { AttachmentRef, InboundMessage, PostedMessage, Target, Transport } from '../types/transport.js'
+import type { ActionButton, ActionEvent, AttachmentRef, InboundMessage, PostedMessage, Target, Transport } from '../types/transport.js'
 
 interface DiscordHost {
   cfg: Record<string, any>
@@ -39,6 +39,14 @@ interface DiscordMessage {
   author?: DiscordUser
   attachments?: DiscordAttachment[]
   referenced_message?: { author?: DiscordUser }
+}
+interface DiscordInteraction {
+  id: string
+  token?: string
+  channel_id?: string
+  data?: { custom_id?: string }
+  member?: { user?: DiscordUser }
+  user?: DiscordUser
 }
 interface DiscordGatewayFrame {
   op: number
@@ -77,6 +85,7 @@ export function createDiscordTransport(host: DiscordHost): DiscordTransport {
   let reconnectTimer: ReturnType<typeof setTimeout> | null = null
   let heartbeatTimer: ReturnType<typeof setInterval> | null = null
   let onMessage: ((message: InboundMessage) => void) | null = null
+  let onAction: ((action: ActionEvent) => void) | null = null
 
   /** Discord offers history, so this is only a fallback for a fresh process. */
   const seenMessages = new Map<string, Array<{ ts: string; who: string; text: string }>>()
@@ -140,6 +149,30 @@ export function createDiscordTransport(host: DiscordHost): DiscordTransport {
     ring.push({ ts, who, text: text.replace(/\n+/g, ' ').slice(0, 500) })
     while (ring.length > HISTORY_PER_CHANNEL) ring.shift()
     seenMessages.set(channel, ring)
+  }
+
+  /** Button styles as Discord numbers, so a caller can name the intent. */
+  const BUTTON_STYLES: Record<string, number> = { primary: 1, secondary: 2, danger: 4 }
+
+  /**
+   * A button press. The interaction must be acknowledged or Discord shows the user an
+   * error, so the callback goes out before the decision is handed over.
+   */
+  async function handleInteraction(interaction: DiscordInteraction) {
+    const customId = interaction.data?.custom_id
+    if (customId === undefined) return
+    try {
+      await rest(`/interactions/${interaction.id}/${interaction.token}/callback`, {
+        method: 'POST',
+        body: JSON.stringify({ type: 6 }),   // deferred update: the acknowledgement
+      })
+    } catch (e) {
+      log(`discord interaction acknowledgement failed: ${String((e as Error)?.message ?? e)}`)
+    }
+    const user = interaction.member?.user?.id ?? interaction.user?.id ?? 'unknown'
+    const target = { channel: String(interaction.channel_id ?? ''), threadTs: null }
+    log(`discord button pressed: ${customId}`)
+    if (onAction !== null) onAction({ id: customId, target, user })
   }
 
   function parseDispatch(name: string, data: Record<string, any>): InboundMessage | null {
@@ -210,6 +243,11 @@ export function createDiscordTransport(host: DiscordHost): DiscordTransport {
         } catch (e) { log(`discord identify failed: ${String((e as Error)?.message ?? e)}`) }
         return
       }
+      if (frame.op === 0 && frame.t === 'INTERACTION_CREATE') {
+        void handleInteraction(frame.d as unknown as DiscordInteraction)
+          .catch((e) => log('discord interaction failed', String((e as Error)?.message ?? e)))
+        return
+      }
       if (frame.op === 0 && frame.t !== undefined) {
         const message = parseDispatch(frame.t, frame.d ?? {})
         if (message !== null && onMessage !== null) {
@@ -261,15 +299,21 @@ export function createDiscordTransport(host: DiscordHost): DiscordTransport {
     authenticate,
     ready,
     hasSocket,
-    async connect({ onMessage: handler }: { onMessage: (message: InboundMessage) => void }) {
+    supportsButtons: true,
+
+    async connect({ onMessage: handler, onAction: actionHandler }: {
+      onMessage: (message: InboundMessage) => void
+      onAction?: (action: ActionEvent) => void
+    }) {
       onMessage = handler
+      onAction = actionHandler ?? null
       await authenticate()
       await identity()
       await connectInternal()
     },
 
     /** Discord edits are PATCHes against the message; that is how progress is replaced. */
-    async post(target: Target, text: string, options?: { replace?: string | null }): Promise<PostedMessage | null> {
+    async post(target: Target, text: string, options?: { replace?: string | null; buttons?: ActionButton[] }): Promise<PostedMessage | null> {
       const chunks: string[] = []
       for (let i = 0; i < text.length; i += MESSAGE_LIMIT) chunks.push(text.slice(i, i + MESSAGE_LIMIT))
       if (chunks.length === 0) chunks.push('(empty response)')
@@ -288,8 +332,22 @@ export function createDiscordTransport(host: DiscordHost): DiscordTransport {
           }
         }
         if (sent === null) {
+          const buttons = options?.buttons ?? []
           sent = await rest<DiscordMessage>(`/channels/${target.channel}/messages`, {
-            method: 'POST', body: JSON.stringify({ content: body }),
+            method: 'POST',
+            body: JSON.stringify({
+              content: body,
+              // An action row of buttons: the decision is made in place rather than by
+              // typing a reply, which is what Discord is good at.
+              ...(buttons.length > 0
+                ? { components: [{ type: 1, components: buttons.slice(0, 5).map((button) => ({
+                    type: 2,
+                    style: BUTTON_STYLES[button.style ?? 'secondary'] ?? 2,
+                    label: button.label.slice(0, 80),
+                    custom_id: button.id.slice(0, 100),
+                  })) }] }
+                : {}),
+            }),
           })
         }
         replace = null

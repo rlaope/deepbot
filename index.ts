@@ -599,6 +599,30 @@ export function apply(ctx, config) {
     return normalised !== '' && words.some((word) => normalised === word.toLowerCase())
   }
 
+  /**
+   * A button press, routed to the approval it belongs to.
+   *
+   * The id carries what the button means, so the transport does not need to know: it
+   * reports `approval:allow:<conversation>` and this decides.
+   */
+  async function handleAction(action: { id: string; target: { channel: string; threadTs: string | null }; user: string }) {
+    const match = /^approval:(allow|deny):(.+)$/.exec(action.id)
+    if (match === null) { log(`unhandled action id: ${action.id}`); return }
+    const decision = match[1]
+    const key = match[2]
+    const pending = pendingApprovals.get(key)
+    if (pending === undefined) {
+      log(`an approval button was pressed in ${key} but nothing is pending`)
+      await transport.post(targetFromKey(key), '이미 처리된 요청입니다.')
+      return
+    }
+    pendingApprovals.delete(key)
+    const allowed = decision === 'allow'
+    log(`approval in ${key} answered by button: ${allowed ? 'allowed-once' : 'rejected'}`)
+    pending.resolve(allowed ? 'allowed-once' : 'rejected')
+    await transport.post(targetFromKey(key), allowed ? '허용했습니다 — 계속 진행합니다.' : '거부했습니다.')
+  }
+
   /** A whole message that is only "stop": the shapes a person actually types. */
   function isCancelRequest(text: string): boolean {
     const normalised = text.trim().toLowerCase().replace(/[.!?~,\s]+$/u, '')
@@ -682,11 +706,20 @@ export function apply(ctx, config) {
         return 'unavailable'
       }
       const reason = String(request?.displayReason ?? request?.reason ?? 'a sensitive action')
+      // A transport that can render buttons gets them: the decision is made in place.
+      // One that cannot gets the instruction to answer in the thread, which is the same
+      // decision by a slower route.
+      const withButtons = transport.supportsButtons === true
       const asked = await transport.post(target, [
         `:warning: 권한이 필요합니다: ${reason}`,
-        `실행하려면 *허용*, 거부하려면 *거부* 라고 답해주세요.`,
+        withButtons ? `아래 버튼으로 결정해주세요.` : `실행하려면 *허용*, 거부하려면 *거부* 라고 답해주세요.`,
         `(답이 없으면 ${Math.round(cfg.approvalTimeoutMs / 60000)}분 뒤 자동으로 거부됩니다.)`,
-      ].join('\n'))
+      ].join('\n'), withButtons
+        ? { buttons: [
+            { id: `approval:allow:${key}`, label: '허용', style: 'primary' as const },
+            { id: `approval:deny:${key}`, label: '거부', style: 'danger' as const },
+          ] }
+        : undefined)
       if (asked === null) return 'unavailable'
       log(`approval requested in ${key}: ${reason.slice(0, 120)}`)
       return await new Promise<string>((resolve) => {
@@ -1655,6 +1688,9 @@ export function apply(ctx, config) {
     await transport.connect({
       onMessage: (message: InboundMessage) => {
         handleEvent(message).catch((e) => log('handleEvent threw', String(e)))
+      },
+      onAction: (action) => {
+        handleAction(action).catch((e) => log('handleAction threw', String(e)))
       },
     })
   }

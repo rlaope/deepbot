@@ -50,6 +50,24 @@ export interface InboundMessage {
   raw: unknown
 }
 
+/**
+ * A button on a message. Platforms that can render one use it for decisions a person
+ * makes in place — an approval, for instance — instead of asking for a reply.
+ */
+export interface ActionButton {
+  /** Round-trips to `onAction`; the caller decides what it means. */
+  id: string
+  label: string
+  style?: 'primary' | 'danger' | 'secondary'
+}
+
+/** A button press, as the transport reports it. */
+export interface ActionEvent {
+  id: string
+  target: Target
+  user: string
+}
+
 /** A rendered message the transport has already sent, so it can be replaced. */
 export interface PostedMessage {
   channel: string
@@ -80,10 +98,19 @@ export interface Transport {
   connect(handlers: {
     onMessage: (message: InboundMessage) => void
     onStatus: (status: TransportStatus) => void
+    /** Button presses, on transports that have them. */
+    onAction?: (action: ActionEvent) => void
   }): Promise<void>
 
-  /** Send, or replace a message already sent (progress turning into the answer). */
-  post(target: Target, text: string, options?: { replace?: string | null }): Promise<PostedMessage | null>
+  /** Whether this transport can render buttons. */
+  readonly supportsButtons: boolean
+
+  /**
+   * Send, or replace a message already sent (progress turning into the answer).
+   * `buttons` is honoured by transports that can render them and ignored by those that
+   * cannot — the caller asks, the transport decides.
+   */
+  post(target: Target, text: string, options?: { replace?: string | null; buttons?: ActionButton[] }): Promise<PostedMessage | null>
 
   /**
    * Messages newer than `sinceTs`, so the adapter can send a delta instead of the

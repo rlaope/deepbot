@@ -72,7 +72,7 @@ function fakeDiscord(options = {}) {
     }
     return json({})
   }
-  return { sent, rest, fetchImpl, WebSocketImpl: FakeSocket, identify: () => sent.find((f) => f.op === 2) }
+  return { sent, rest, fetchImpl, WebSocketImpl: FakeSocket, identify: () => sent.find((f) => f.op === 2), dispatch: emit }
 }
 
 function transportFor(api, cwd, extra = {}) {
@@ -223,6 +223,34 @@ function message(overrides = {}) {
   check('the attachment is written', existsSync(join(cwd, 'attachments', '100-notes.txt')), readFileSync(join(cwd, 'attachments', '100-notes.txt'), 'utf8'))
   check('text content is inlined in the manifest', /file body/.test(manifest.text), manifest.text.slice(0, 60))
   rmSync(cwd, { recursive: true, force: true })
+}
+
+// 8. Buttons, and the interaction that comes back when one is pressed.
+{
+  const api = fakeDiscord()
+  const t = transportFor(api, mkdtempSync(join(tmpdir(), 'dc-')))
+  const actions = []
+  await t.identity()
+  check('the transport says it can render buttons', t.supportsButtons === true)
+  await t.post({ channel: 'C1', threadTs: null }, 'decide please', {
+    buttons: [{ id: 'approval:allow:C1', label: '허용', style: 'primary' }, { id: 'approval:deny:C1', label: '거부', style: 'danger' }],
+  })
+  const send = api.rest.find((c) => c.method === 'POST' && c.path === '/channels/C1/messages')
+  const row = send?.body?.components?.[0]
+  check('the message carries an action row', row?.type === 1 && row?.components?.length === 2, JSON.stringify(send?.body?.components))
+  check('the buttons carry their ids', row?.components?.[0]?.custom_id === 'approval:allow:C1')
+  check('and their styles', row?.components?.[0]?.style === 1 && row?.components?.[1]?.style === 4, `${row?.components?.[0]?.style}, ${row?.components?.[1]?.style}`)
+
+  const api2 = fakeDiscord()
+  const t2 = transportFor(api2, mkdtempSync(join(tmpdir(), 'dc-')))
+  await t2.connect({ onMessage: () => {}, onAction: (action) => actions.push(action) })
+  await sleep(60)
+  api2.dispatch({ op: 0, t: 'INTERACTION_CREATE', d: { id: 'I1', token: 'T1', channel_id: 'C1', data: { custom_id: 'approval:allow:C1' }, user: { id: '5' } } })
+  await sleep(120)
+  await t2.close()
+  check('a button press reaches the handler', actions.length === 1 && actions[0].id === 'approval:allow:C1', JSON.stringify(actions))
+  check('with the conversation it happened in', actions[0]?.target?.channel === 'C1')
+  check('and the interaction is acknowledged', api2.rest.some((c) => c.path === '/interactions/I1/T1/callback'), JSON.stringify(api2.rest.map((c) => c.path).slice(-2)))
 }
 
 const failed = results.filter((r) => !r.ok)

@@ -300,6 +300,35 @@ function boot({ state = {}, config = {} } = {}) {
   t.done()
 }
 
+// 18. Buttons, where the transport can render them: the same decision, made in place.
+{
+  const t = boot({ state: { sessions: { 'C_ALLOWED:t1': 'slack-abc' } }, config: { fake: { supportsButtons: true } } })
+  await sleep(60)
+  const outcome = t.askApproval()
+  await sleep(100)
+  const withButtons = t.transport.posted.find((p) => p.buttons !== null)
+  check('an approval on a button-capable transport posts buttons', withButtons?.buttons?.length === 2, JSON.stringify(withButtons?.buttons))
+  check('the buttons carry what they mean', withButtons?.buttons?.[0]?.id === 'approval:allow:C_ALLOWED:t1', String(withButtons?.buttons?.[0]?.id))
+  check('and the label is not an instruction to type', !/허용.*거부.*답해주세요/.test(String(withButtons?.text)) || /버튼으로 결정/.test(String(withButtons?.text)), String(withButtons?.text).slice(-60))
+  t.transport.press('approval:allow:C_ALLOWED:t1')
+  check('pressing 허용 allows the action once', await outcome === 'allowed-once', await outcome)
+  check('the press is logged as a decision by button', t.logs.some((l) => /answered by button: allowed-once/.test(l)))
+  check('and a confirmation is posted', t.transport.posted.some((p) => /허용했습니다/.test(p.text)))
+  t.done()
+}
+
+// 19. A button for a request that is already settled says so rather than doing nothing.
+{
+  const t = boot({ state: { sessions: { 'C_ALLOWED:t1': 'slack-abc' } }, config: { fake: { supportsButtons: true } } })
+  await sleep(60)
+  t.transport.press('approval:allow:C_ALLOWED:t1')
+  await sleep(150)
+  check('a stale button is answered', t.transport.posted.some((p) => /이미 처리된 요청/.test(p.text)), JSON.stringify(t.transport.posted.map((p) => p.text.slice(0, 24))))
+  check('and it is logged', t.logs.some((l) => /nothing is pending/.test(l)))
+  check('an unknown action id is logged, not swallowed', (() => { t.transport.press('something-else'); return t.logs.some((l) => /unhandled action id/.test(l)) })())
+  t.done()
+}
+
 const failed = results.filter((r) => !r.ok)
 console.log(`\n${results.length - failed.length}/${results.length} checks passed`)
 process.exit(failed.length === 0 ? 0 : 1)

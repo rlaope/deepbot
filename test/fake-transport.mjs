@@ -15,6 +15,7 @@ export function createFakeTransport(options = {}) {
   const historyCalls = []
   const attachmentCalls = []
   let onMessage = null
+  let onAction = null
   let closed = 0
   let socket = true
 
@@ -46,9 +47,15 @@ export function createFakeTransport(options = {}) {
 
     // ── the Transport interface ─────────────────────────────────────────────
     async identity() { return { name: 'fakebot', id: 'U_FAKE', team: 'T_FAKE' } },
-    async connect(handlers) { onMessage = handlers.onMessage },
+    async connect(handlers) { onMessage = handlers.onMessage; onAction = handlers.onAction ?? null },
+    supportsButtons: options.supportsButtons ?? false,
+    /** Press a button, as a platform would. */
+    press(id, user = 'U_USER') {
+      if (onAction === null) throw new Error('fake transport received no onAction handler')
+      onAction({ id, target: { channel: 'C_ALLOWED', threadTs: 't1' }, user })
+    },
     async post(target, text, opts = {}) {
-      posted.push({ target, text, replace: opts.replace ?? null })
+      posted.push({ target, text, replace: opts.replace ?? null, buttons: opts.buttons ?? null })
       return { channel: target.channel, ts: `ts-${posted.length}` }
     },
     async fetchHistory(target, opts) {

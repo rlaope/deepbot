@@ -228,6 +228,8 @@ export function createTelegramTransport(host: TelegramHost): TelegramTransport {
     identity,
     authenticate,
     ready,
+    // Inline keyboards exist, but this transport answers decisions by reply text.
+    supportsButtons: false,
     hasSocket,
 
     async connect(handlers: { onMessage: (message: InboundMessage) => void }) {

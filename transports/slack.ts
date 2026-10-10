@@ -454,6 +454,9 @@ export function createSlackTransport(host: SlackTransportHost): SlackTransport {
     identity,
     authenticate,
     ready,
+    // Slack's own interactive components are block actions, which this adapter does not
+    // handle; a request here is answered by a reply in the thread instead.
+    supportsButtons: false,
 
     async connect(handlers: { onMessage: (message: InboundMessage) => void; onStatus?: unknown }) {
       onMessage = handlers.onMessage
