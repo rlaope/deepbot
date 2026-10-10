@@ -15,9 +15,11 @@
 import { mkdirSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import type {
-  SlackAuthTestResponse, SlackHistoryResponse, SlackMember, SlackMembersResponse,
-  SlackMessage, SlackPostResponse, SlackResponse, SlackUserInfoResponse,
+  SlackAuthTestResponse, SlackConnectionResponse, SlackEnvelope, SlackEvent,
+  SlackHistoryResponse, SlackMember, SlackMembersResponse, SlackMessage,
+  SlackPostResponse, SlackResponse, SlackUserInfoResponse,
 } from '../types/slack.js'
+import type { InboundMessage, PostedMessage, Target } from '../types/transport.js'
 
 export function createSlackApi({ cfg, log, sessionCwd }) {
   // ── Slack Web API (built-in fetch) ────────────────────────────────────────
@@ -204,4 +206,296 @@ export function createSlackApi({ cfg, log, sessionCwd }) {
     }
   }
   return { slackPost, slackGet, fetchHistoryText, fetchAttachments, say, toSlackMarkdown, humanize }
+}
+
+// ── Transport ───────────────────────────────────────────────────────────────
+//
+// Everything above is Slack's API surface. What follows is the part that satisfies
+// the Transport interface: credentials, identity, the Socket Mode connection with
+// its reconnect loop and watchdog, event parsing, and rendering. The core keeps
+// mapping, the turn loop, policy (which channels may be answered), watches and
+// reminders — none of which needs to know it is talking to Slack.
+
+export interface SlackTransportHost {
+  cfg: Record<string, any>
+  log: (...parts: unknown[]) => void
+  sessionCwd: () => Promise<string>
+  /** Reads a credential by reference; the adapter never sees a raw secret until here. */
+  credential: (ref: string) => Promise<string | null>
+  /** Merge into the health snapshot. Increments are reported as absolutes by the transport. */
+  onHealth: (patch: Record<string, unknown>) => void
+  /** Injectable for tests: the websocket constructor. */
+  WebSocketImpl?: typeof WebSocket
+}
+
+/** Direct messages: Slack channel ids starting with D (im) or U (legacy). */
+function isDirectChannel(channel: unknown): boolean {
+  return typeof channel === 'string' && (channel.startsWith('D') || channel.startsWith('U'))
+}
+
+export function createSlackTransport(host: SlackTransportHost) {
+  const { cfg, log, credential, onHealth } = host
+  const WebSocketImpl = host.WebSocketImpl ?? WebSocket
+
+  // Credentials and identity are resolved on connect, not at construction: a
+  // scenario run has no Slack client and must not try to authenticate.
+  let botToken: string | null = null
+  let appToken: string | null = null
+  let botUserId: string | null = null
+  let ws: WebSocket | null = null
+
+  let stopped = false
+  let connected = false
+  let backoff = 1000
+  let attempts = 0
+  let failures = 0
+  let reconnectTimer: ReturnType<typeof setTimeout> | null = null
+  let watchdogTimer: ReturnType<typeof setInterval> | null = null
+
+  const api = createSlackApi({ cfg, log, sessionCwd: host.sessionCwd })
+
+  /**
+   * Resolve the credentials. Explicit, never lazy: a scenario or self-test run has
+   * no Slack client and must not reach for real tokens, or a test would post into a
+   * live channel. The old code got this right by resolving only inside the real
+   * connect path; that property is kept and named.
+   */
+  async function authenticate(): Promise<void> {
+    botToken = await credential(cfg.botTokenRef)
+    appToken = await credential(cfg.appTokenRef)
+    if (!botToken) throw new Error(`deepbot: credential ${cfg.botTokenRef} not found`)
+    if (!appToken) throw new Error(`deepbot: credential ${cfg.appTokenRef} not found`)
+  }
+
+  /** Whether a Slack client exists in this run at all; the delivery watcher asks. */
+  function ready(): boolean { return botToken !== null && appToken !== null }
+
+  function requireToken(): string {
+    if (botToken === null) throw new Error('slack transport is not authenticated')
+    return botToken
+  }
+
+  async function identity() {
+    if (!ready()) await authenticate()
+    const me = await api.slackGet<SlackAuthTestResponse>(botToken as string, 'auth.test')
+    if (!me.ok) throw new Error(`deepbot: auth.test failed (${me.error}) — check the bot token`)
+    botUserId = me.user_id ?? null
+    return { name: me.user ?? 'unknown', id: me.user_id ?? '', team: me.team }
+  }
+
+  /**
+   * Turn one platform event into something the core can use, or null when it is
+   * not for this agent.
+   *
+   * Everything platform-shaped lives here: what counts as being addressed (a
+   * mention, or any message in a DM), the bot's own messages, edits, and the
+   * mention syntax that has to be stripped before the text is a prompt.
+   */
+  function parseEvent(event: SlackEvent, eventId: string): InboundMessage | null {
+    if (event.bot_id || event.subtype || (event as { edited?: unknown }).edited) return null
+    if (!event.user || event.user === botUserId) return null
+    if (!event.channel || !event.ts) return null
+    if (!event.text?.trim()) return null
+    const isMention = event.type === 'app_mention'
+    const isDm = isDirectChannel(event.channel) || event.channel_type === 'im' || event.channel_type === 'mpim'
+    if (!isDm && cfg.replyMode === 'mention' && !isMention) return null
+    const text = botUserId === null
+      ? event.text
+      : event.text.replace(new RegExp(`<@${botUserId}>`, 'g'), '').trim()
+    if (!text) return null
+    return {
+      eventId,
+      target: { channel: event.channel, threadTs: event.thread_ts ?? event.ts },
+      ts: event.ts,
+      text,
+      user: event.user,
+      addressed: isDm || isMention || cfg.replyMode !== 'mention',
+      files: event.files ?? [],
+      raw: event,
+    }
+  }
+
+  async function openConnection() {
+    // Two traps here, both hit in practice:
+    //   1) this endpoint requires the *app-level* token (xapp-), not the bot
+    //      token — a bot token yields `not_allowed_token_type`.
+    //   2) it is POST-only — a GET yields `insecure_request`.
+    if (appToken === null) throw new Error('slack transport is not authenticated')
+    const r = await api.slackPost<SlackConnectionResponse>(appToken, 'apps.connections.open', {})
+    if (!r.ok) throw new Error(`apps.connections.open failed: ${r.error}`)
+    return r.url
+  }
+
+  /** Retry forever with capped backoff; a successful open resets it. */
+  function scheduleReconnect(delay = backoff) {
+    // No Slack client in this mode (scenario / selfTest): there is nothing to
+    // reconnect, and trying would spam the log with auth failures against a real
+    // app token. This happened while running the test harness.
+    if (appToken === null || botToken === null) return
+    if (stopped || reconnectTimer !== null) return
+    log(`reconnect scheduled in ${delay}ms`)
+    reconnectTimer = setTimeout(() => {
+      reconnectTimer = null
+      if (stopped) return
+      connectInternal().catch((e) => {
+        failures++
+        attempts++
+        onHealth({ connectAttempts: attempts, consecutiveFailures: failures, lastError: String(e?.message ?? e) })
+        log(`reconnect failed (${failures} in a row): ${String(e?.message ?? e)} — still trying`)
+        backoff = Math.min(backoff * 2, 60000)
+        scheduleReconnect()
+      })
+    }, delay)
+    backoff = Math.min(backoff * 2, 60000)
+  }
+
+  /** The socket can also die without a close event; re-arm if nothing is pending. */
+  function startWatchdog() {
+    if (appToken === null) return          // see scheduleReconnect
+    if (watchdogTimer !== null) return
+    watchdogTimer = setInterval(() => {
+      if (stopped) return
+      if (!connected && reconnectTimer === null) {
+        log('watchdog: not connected and nothing scheduled — re-arming')
+        scheduleReconnect(0)
+      }
+    }, 60000)
+  }
+
+  let onMessage: ((message: InboundMessage) => void) | null = null
+
+  async function connectInternal(): Promise<void> {
+    if (stopped) return
+    const url = await openConnection()
+    const socket = new WebSocketImpl(url as string)
+    ws = socket
+
+    socket.addEventListener('open', () => {
+      connected = true
+      backoff = 1000
+      failures = 0
+      if (reconnectTimer !== null) { clearTimeout(reconnectTimer); reconnectTimer = null }
+      onHealth({ connected: true, connectedAt: Date.now(), disconnectedAt: null, consecutiveFailures: 0, lastError: null })
+      log('Socket Mode connected')
+    })
+
+    socket.addEventListener('message', (msg: MessageEvent) => {
+      let env: SlackEnvelope
+      try { env = JSON.parse(String(msg.data)) } catch { return }
+      // Every envelope must be acknowledged within 3 seconds.
+      if (env.envelope_id) {
+        try { socket.send(JSON.stringify({ envelope_id: env.envelope_id })) } catch { /* reconnecting */ }
+      }
+      if (env.type === 'hello') { log('hello received'); return }
+      if (env.type === 'disconnect') {
+        log(`disconnect received (reason=${(env as { reason?: string }).reason ?? '-'}) — reconnecting`)
+        try { socket.close() } catch { /* ignore */ }
+        return
+      }
+      if (env.type === 'events_api' && env.payload?.event) {
+        const message = parseEvent(env.payload.event, env.payload.event_id ?? '')
+        if (message !== null) {
+          attempts++
+          onHealth({ connectAttempts: attempts })
+          if (onMessage) onMessage(message)
+        }
+      }
+    })
+
+    socket.addEventListener('close', () => {
+      if (stopped) return
+      connected = false
+      onHealth({ connected: false, disconnectedAt: Date.now() })
+      log('connection closed')
+      scheduleReconnect()
+    })
+
+    socket.addEventListener('error', (e: Event) => {
+      connected = false
+      const detail = String((e as { message?: string }).message ?? '') || 'WebSocket error'
+      onHealth({ connected: false, lastError: detail })
+      log('WebSocket error', detail)
+    })
+  }
+
+
+  /**
+   * Send, or replace a progress placeholder with the first chunk of the answer.
+   * Markdown in, Slack dialect out: rendering belongs to the transport.
+   */
+  async function postChunked(target: Target, markdown: string, replaceTs: string | null): Promise<PostedMessage | null> {
+    const text = api.toSlackMarkdown(markdown)
+    const chunks: string[] = []
+    for (let i = 0; i < text.length; i += cfg.chunkChars) chunks.push(text.slice(i, i + cfg.chunkChars))
+    if (chunks.length === 0) chunks.push("(empty response)")
+    let first: PostedMessage | null = null
+    let replace = replaceTs
+    for (const [i, chunk] of chunks.entries()) {
+      const body = chunks.length > 1 ? `(${i + 1}/${chunks.length})\n${chunk}` : chunk
+      const ts = replace
+      const sent = ts !== null && first === null
+        ? await api.slackPost<SlackPostResponse>(requireToken(), 'chat.update', { channel: target.channel, ts, text: body })
+        : await api.slackPost<SlackPostResponse>(requireToken(), 'chat.postMessage', { channel: target.channel, thread_ts: target.threadTs ?? '', text: body })
+      replace = null
+      if (i === 0) first = { channel: target.channel, ts: sent.ts ?? '' }
+      if (!sent.ok) log(`reply post failed: ${sent.error} — check the chat:write scope and channel membership`)
+    }
+    return first
+  }
+
+  return {
+    identity,
+    authenticate,
+    ready,
+
+    async connect(handlers: { onMessage: (message: InboundMessage) => void; onStatus?: unknown }) {
+      onMessage = handlers.onMessage
+      await authenticate()
+      await connectInternal()
+      startWatchdog()
+    },
+
+    /** Slack-side rendering: the core hands over Markdown, the transport makes it Slack. */
+    post(target: Target, text: string, options?: { replace?: string | null }): Promise<PostedMessage | null> {
+      requireToken()
+      return postChunked(target, text, options?.replace ?? null)
+    },
+
+    async fetchHistory(target: Target, options: { currentTs: string; sinceTs: string | null; limit: number; maxChars: number }) {
+      const previous = { historyLimit: cfg.historyLimit, historyMaxChars: cfg.historyMaxChars }
+      cfg.historyLimit = options.limit
+      cfg.historyMaxChars = options.maxChars
+      try {
+        return await api.fetchHistoryText(requireToken(), target.channel, target.threadTs, options.currentTs, options.sinceTs)
+      } finally {
+        cfg.historyLimit = previous.historyLimit
+        cfg.historyMaxChars = previous.historyMaxChars
+      }
+    },
+
+    async fetchAttachments(message: InboundMessage, stamp: string) {
+      const text = await api.fetchAttachments(requireToken(), message.files, stamp)
+      return { text }
+    },
+
+    /** Diagnostic only: raw history for the attachment probe. Not part of the interface. */
+    historyRaw(channel: string, limit = 50) {
+      return api.slackGet<SlackHistoryResponse>(requireToken(), 'conversations.history', { channel, limit: String(limit) })
+    },
+
+    /** Whether a socket is open right now, without closing it. */
+    hasSocket(): boolean { return ws !== null },
+
+    /** @returns whether a socket was actually open, so the caller can say so. */
+    async close(): Promise<boolean> {
+      stopped = true
+      if (reconnectTimer !== null) { clearTimeout(reconnectTimer); reconnectTimer = null }
+      if (watchdogTimer !== null) { clearInterval(watchdogTimer); watchdogTimer = null }
+      const hadSocket = ws !== null
+      try { ws?.close() } catch { /* ignore */ }
+      ws = null
+      connected = false
+      return hadSocket
+    },
+  }
 }

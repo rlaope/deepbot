@@ -26,6 +26,8 @@ export interface InboundMessage {
   /** Stable identity for de-duplication across reconnects. */
   eventId: string
   target: Target
+  /** The platform timestamp of this message. */
+  ts: string
   text: string
   /** Who wrote it, in platform terms. */
   user: string

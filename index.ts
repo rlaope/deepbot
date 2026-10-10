@@ -49,10 +49,9 @@ import { createHash, randomUUID } from 'node:crypto'
 import { appendFileSync, existsSync, mkdirSync, readFileSync, readdirSync, statSync, writeFileSync } from 'node:fs'
 import { dirname, join, sep } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { createSlackApi } from './transports/slack.js'
-import type {
-  SlackAuthTestResponse, SlackConnectionResponse, SlackHistoryResponse, SlackPostResponse,
-} from './types/slack.js'
+import { createSlackTransport } from './transports/slack.js'
+import type { SlackHistoryResponse } from './types/slack.js'
+import type { InboundMessage } from './types/transport.js'
 import type { Origin, TurnOutcome, TurnSummary } from './types/core.js'
 
 export const name = 'deepbot'
@@ -187,7 +186,6 @@ export function apply(ctx, config) {
   // '*' means "every channel the bot has been invited to".
   const allChannels = targetChannels.includes('*')
   // Channel ID prefixes: C=public, G=legacy private, D=DM, U=MPDM member.
-  const isDirect = (channel) => typeof channel === 'string' && (channel.startsWith('D') || channel.startsWith('U'))
 
   const stateDir = cfg.stateDir ?? join(process.cwd(), 'slack-state')
   mkdirSync(stateDir, { recursive: true })
@@ -479,9 +477,9 @@ export function apply(ctx, config) {
         const threadTs = key.slice(separator + 1)
         health.delivered = (health.delivered ?? 0) + 1
         writeHealth()
-        if (botToken === null) { log(`agent-initiated message in ${sessionId} — no Slack client (scenario mode), not delivered`); return }
+        if (!transport.ready()) { log(`agent-initiated message in ${sessionId} — no Slack client (scenario mode), not delivered`); return }
         log(`agent-initiated message in ${sessionId} — delivering to ${channel}`)
-        say(botToken, channel, threadTs, toSlackMarkdown(text))
+        transport.post({ channel, threadTs }, text)
           .then(() => refreshIndex('agent-initiated'))
           .catch((e) => log('agent-initiated delivery failed', String(e?.message ?? e)))
       } catch (e) { log('delivery watcher error', String(e?.message ?? e)) }
@@ -689,11 +687,16 @@ export function apply(ctx, config) {
     return { text, reason, toolsUsed }
   }
 
-  // ── Slack transport ───────────────────────────────────────────────────────
-  // The Web API layer lives in transports/slack.mjs. It receives only what it
-  // uses from this adapter: config, the logger, and the session directory.
-  const slackApi = createSlackApi({ cfg, log, sessionCwd })
-  const { slackPost, slackGet, fetchHistoryText, fetchAttachments, say, toSlackMarkdown } = slackApi
+  // ── Transport ─────────────────────────────────────────────────────────────
+  // Everything platform-shaped lives behind this: credentials, identity, the
+  // Socket Mode connection and its reconnect loop, event parsing, rendering,
+  // history deltas, attachments. The core keeps mapping, the turn loop, policy,
+  // watches and reminders.
+  const transport = createSlackTransport({
+    cfg, log, sessionCwd,
+    credential: (ref: string) => credential(ref),
+    onHealth: (patch: Record<string, unknown>) => { Object.assign(health, patch); writeHealth() },
+  })
 
   // ── Concurrency ───────────────────────────────────────────────────────────
   const queue = []
@@ -708,22 +711,25 @@ export function apply(ctx, config) {
   }
 
   // ── Event handling ────────────────────────────────────────────────────────
-  async function handleEvent(event, eventId, botToken, botUserId) {
-    const channel = event.channel
+  /**
+   * One inbound message, already parsed by the transport: it has decided the
+   * message is for this agent, stripped the mention, and resolved the thread.
+   *
+   * What remains here is policy and orchestration — which channels may be
+   * answered, de-duplication, the turn, and the reply — none of which is
+   * platform-specific.
+   */
+  async function handleEvent(message: InboundMessage) {
+    const { target, ts } = message
+    const channel = target.channel
     // Outside the allowlist, do nothing. '*' means every invited channel.
     if (!allChannels && !targetChannels.includes(channel)) return
-    if (event.bot_id || event.subtype || event.edited) return     // bot/edit events
-    if (!event.user || event.user === botUserId) return
-    const isMention = event.type === 'app_mention'
-    // DMs are answered without a mention; channels follow replyMode.
-    const isDm = isDirect(channel) || event.channel_type === 'im' || event.channel_type === 'mpim'
-    if (!isDm && cfg.replyMode === 'mention' && !isMention) return
-    if (!event.text?.trim()) return
-    if (alreadySeen(eventId)) { log(`duplicate event ignored event_id=${eventId}`); return }
+    if (!message.addressed) return
+    if (alreadySeen(message.eventId)) { log(`duplicate event ignored event_id=${message.eventId}`); return }
 
-    const threadTs = event.thread_ts ?? event.ts
+    const threadTs = target.threadTs ?? ts
     const key = `${channel}:${threadTs}`
-    const prompt = event.text.replace(new RegExp(`<@${botUserId}>`, 'g'), '').trim().slice(0, cfg.maxPromptChars)
+    const prompt = message.text.slice(0, cfg.maxPromptChars)
     if (!prompt) return
 
     health.accepted++
@@ -733,25 +739,31 @@ export function apply(ctx, config) {
 
     enqueue(async () => {
       const started = Date.now()
+      const replyTarget = { channel, threadTs }
       try {
         let historyText = ''
-        let historyLastTs = null
+        let historyLastTs: string | null = null
         try {
           const seenUpTo = state.history?.[key] ?? null
-          const hist = await fetchHistoryText(botToken, channel, event.thread_ts ?? null, event.ts, seenUpTo)
+          const hist = await transport.fetchHistory({ channel, threadTs }, {
+            currentTs: ts,
+            sinceTs: seenUpTo ?? null,
+            limit: cfg.historyLimit,
+            maxChars: cfg.historyMaxChars,
+          })
           historyText = hist.text
           historyLastTs = hist.lastTs
         } catch (e) { log(`history fetch threw: ${String(e?.message ?? e)}`) }
         let attachmentText = ''
-        try { attachmentText = await fetchAttachments(botToken, event.files, String(event.ts).replace('.', '-')) }
+        try { attachmentText = (await transport.fetchAttachments(message, String(ts).replace('.', '-'))).text }
         catch (e) { log(`attachment fetch threw: ${String(e?.message ?? e)}`) }
-        if (attachmentText !== '') log(`attachments: ${(event.files ?? []).length} file(s) for ts=${event.ts}`)
-        let placeholderTs = null
+        if (attachmentText !== '') log(`attachments: ${message.files.length} file(s) for ts=${ts}`)
+        let placeholderTs: string | null = null
         const progressTimer = cfg.progressAfterMs > 0
           ? setTimeout(async () => {
               try {
-                const posted = await slackPost<SlackPostResponse>(botToken, 'chat.postMessage', { channel, thread_ts: threadTs, text: cfg.progressText })
-                if (posted.ok) { placeholderTs = posted.ts; log(`progress placeholder posted after ${cfg.progressAfterMs}ms`) }
+                const posted = await transport.post(replyTarget, cfg.progressText)
+                if (posted !== null) { placeholderTs = posted.ts; log(`progress placeholder posted after ${cfg.progressAfterMs}ms`) }
               } catch { /* progress is best effort */ }
             }, cfg.progressAfterMs)
           : null
@@ -773,14 +785,14 @@ export function apply(ctx, config) {
           health.answered++
           writeHealth()
           log(`answered channel=${channel} len=${r.text.length} ${Date.now() - started}ms`)
-          await say(botToken, channel, threadTs, toSlackMarkdown(r.text), placeholderTs)
+          await transport.post(replyTarget, r.text, { replace: placeholderTs })
         } else {
           log(`turn ended abnormally reason=${JSON.stringify(r.reason)}`)
-          await say(botToken, channel, threadTs, `The turn did not complete (${r.reason?.kind ?? 'unknown'}). Log: ${LOG}`, placeholderTs)
+          await transport.post(replyTarget, `The turn did not complete (${r.reason?.kind ?? 'unknown'}). Log: ${LOG}`, { replace: placeholderTs })
         }
       } catch (e) {
         log('turn failed', String(e?.stack ?? e))
-        await say(botToken, channel, threadTs, `Execution failed: ${String(e?.message ?? e).slice(0, 300)}`)
+        await transport.post(replyTarget, `Execution failed: ${String(e?.message ?? e).slice(0, 300)}`)
       }
     })
   }
@@ -790,133 +802,6 @@ export function apply(ctx, config) {
     return new Promise<T>((resolve, reject) => {
       const t = setTimeout(() => reject(new Error(`turn timed out after ${Math.round(ms / 1000)}s`)), ms)
       promise.then((v) => { clearTimeout(t); resolve(v) }, (e) => { clearTimeout(t); reject(e) })
-    })
-  }
-
-  // ── Socket Mode ───────────────────────────────────────────────────────────
-  let ws = null
-  let backoff = 1000
-  let stopped = false
-  let botToken = null
-  let appToken = null
-  let botUserId = null
-  // Reconnect state.
-  //
-  // A single retry is NOT enough. An earlier version scheduled exactly one retry
-  // inside the close handler; when that retry failed (network down, machine
-  // asleep) the catch only logged it and the chain ended — leaving the process
-  // alive, the web UI healthy, and NO Slack connection, with nothing in the log
-  // after the failure. It went unnoticed for 57 minutes. The loop below never
-  // gives up, and the watchdog re-arms it if the socket goes quiet without a
-  // close event.
-  let reconnectTimer = null
-  let watchdogTimer = null
-  let connected = false
-  let consecutiveFailures = 0
-
-  async function openConnection() {
-    // Two traps here, both hit in practice:
-    //   1) this endpoint requires the *app-level* token (xapp-), not the bot
-    //      token — a bot token yields `not_allowed_token_type`.
-    //   2) it is POST-only — a GET yields `insecure_request`.
-    const r = await slackPost<SlackConnectionResponse>(appToken, 'apps.connections.open', {})
-    if (!r.ok) throw new Error(`apps.connections.open failed: ${r.error}`)
-    return r.url
-  }
-
-  /** Retry forever with capped backoff; a successful open resets it. */
-  function scheduleReconnect(delay = backoff) {
-    // No Slack client in this mode (scenario / selfTest): there is nothing to
-    // reconnect, and trying would spam the log with auth failures against a real
-    // app token. This happened while running the test harness.
-    if (appToken === null || botToken === null) return
-    if (stopped || reconnectTimer !== null) return
-    log(`reconnect scheduled in ${delay}ms`)
-    reconnectTimer = setTimeout(() => {
-      reconnectTimer = null
-      if (stopped) return
-      connect().catch((e) => {
-        consecutiveFailures++
-        health.connectAttempts++
-        health.consecutiveFailures = consecutiveFailures
-        health.lastError = String(e?.message ?? e)
-        writeHealth()
-        log(`reconnect failed (${consecutiveFailures} in a row): ${String(e?.message ?? e)} — still trying`)
-        backoff = Math.min(backoff * 2, 60000)
-        scheduleReconnect()
-      })
-    }, delay)
-    backoff = Math.min(backoff * 2, 60000)
-  }
-
-  /** The socket can also die without a close event; re-arm if nothing is pending. */
-  function startWatchdog() {
-    if (appToken === null) return          // see scheduleReconnect
-    if (watchdogTimer !== null) return
-    watchdogTimer = setInterval(() => {
-      if (stopped) return
-      if (!connected && reconnectTimer === null) {
-        log('watchdog: not connected and nothing scheduled — re-arming')
-        scheduleReconnect(0)
-      }
-    }, 60000)
-  }
-
-  async function connect() {
-    if (stopped) return
-    const url = await openConnection()
-    ws = new WebSocket(url)
-
-    ws.addEventListener('open', () => {
-      connected = true
-      backoff = 1000
-      consecutiveFailures = 0
-      if (reconnectTimer !== null) { clearTimeout(reconnectTimer); reconnectTimer = null }
-      health.connected = true
-      health.connectedAt = Date.now()
-      health.disconnectedAt = null
-      health.consecutiveFailures = 0
-      health.lastError = null
-      writeHealth()
-      log('Socket Mode connected')
-    })
-
-    ws.addEventListener('message', (msg) => {
-      let env
-      try { env = JSON.parse(msg.data) } catch { return }
-      // Every envelope must be acknowledged within 3 seconds.
-      if (env.envelope_id) {
-        try { ws.send(JSON.stringify({ envelope_id: env.envelope_id })) } catch { /* reconnecting */ }
-      }
-      if (env.type === 'hello') { log('hello received'); return }
-      if (env.type === 'disconnect') {
-        log(`disconnect received (reason=${env.reason ?? '-'}) — reconnecting`)
-        try { ws.close() } catch { /* ignore */ }
-        return
-      }
-      if (env.type === 'events_api' && env.payload?.event) {
-        // Acknowledge first, handle in the background.
-        handleEvent(env.payload.event, env.payload.event_id, botToken, botUserId)
-          .catch((e) => log('handleEvent threw', String(e)))
-      }
-    })
-
-    ws.addEventListener('close', () => {
-      if (stopped) return
-      connected = false
-      health.connected = false
-      health.disconnectedAt = Date.now()
-      writeHealth()
-      log('connection closed')
-      scheduleReconnect()
-    })
-
-    ws.addEventListener('error', (e) => {
-      connected = false
-      health.connected = false
-      health.lastError = String(e?.message ?? e) || 'WebSocket error'
-      writeHealth()
-      log('WebSocket error', String(e?.message ?? e))
     })
   }
 
@@ -1146,9 +1031,10 @@ export function apply(ctx, config) {
       // "<channel>", "<channel>:<thread_ts>" or "<channel>:<thread_ts>:<ts to exclude>"
       const [probeChannel, probeThread, probeCurrent] = cfg.historyProbe.split(':')
       try {
-        const token = await credential(cfg.botTokenRef)
-        if (!token) throw new Error(`credential ${cfg.botTokenRef} not found`)
-        const probed = await fetchHistoryText(token, probeChannel, probeThread ?? null, probeCurrent ?? 'PROBE')
+        await transport.authenticate()
+        const probed = await transport.fetchHistory({ channel: probeChannel, threadTs: probeThread ?? null }, {
+          currentTs: probeCurrent ?? 'PROBE', sinceTs: null, limit: cfg.historyLimit, maxChars: cfg.historyMaxChars,
+        })
         log(`history probe ${cfg.historyProbe} — ${probed.text.length} chars`)
         log(`----8<----\n${probed.text}\n---->8----`)
       } catch (e) { log(`history probe failed: ${String(e?.stack ?? e)}`) }
@@ -1167,14 +1053,16 @@ export function apply(ctx, config) {
     if (typeof cfg.attachmentProbe === 'string' && cfg.attachmentProbe.trim() !== '') {
       const [probeChannel, probeTs] = cfg.attachmentProbe.split(':')
       try {
-        const token = await credential(cfg.botTokenRef)
-        if (!token) throw new Error(`credential ${cfg.botTokenRef} not found`)
-        const history = await slackGet<SlackHistoryResponse>(token, 'conversations.history', { channel: probeChannel, limit: '50' })
+        await transport.authenticate()
+        const history = await transport.historyRaw(probeChannel, 50)
         if (!history.ok) throw new Error(`conversations.history failed: ${history.error}`)
-        const message = (history.messages ?? []).find((m) => m.ts === probeTs)
-        const files = message?.files ?? []
-        log(`attachment probe ${cfg.attachmentProbe} — message found=${message !== undefined}, files=${files.length}`)
-        const manifest = await fetchAttachments(token, files, String(probeTs).replace('.', '-'))
+        const found = (history.messages ?? []).find((m) => m.ts === probeTs)
+        const files = found?.files ?? []
+        log(`attachment probe ${cfg.attachmentProbe} — message found=${found !== undefined}, files=${files.length}`)
+        const manifest = (await transport.fetchAttachments({
+          eventId: 'probe', target: { channel: probeChannel, threadTs: null }, ts: String(probeTs),
+          text: '', user: '', addressed: true, files, raw: {} as never,
+        }, String(probeTs).replace('.', '-'))).text
         log(`----8<----\n${manifest}\n---->8----`)
       } catch (e) { log(`attachment probe failed: ${String(e?.stack ?? e)}`) }
       return
@@ -1204,16 +1092,10 @@ export function apply(ctx, config) {
       return
     }
 
-    botToken = await credential(cfg.botTokenRef)
-    appToken = await credential(cfg.appTokenRef)
-    if (!botToken) throw new Error(`deepbot: credential ${cfg.botTokenRef} not found`)
-    if (!appToken) throw new Error(`deepbot: credential ${cfg.appTokenRef} not found`)
-
-    const me = await slackGet<SlackAuthTestResponse>(botToken, 'auth.test')
-    if (!me.ok) throw new Error(`deepbot: auth.test failed (${me.error}) — check the bot token`)
+    const me = await transport.identity()
 
     const cwd = await sessionCwd()
-    log(`starting — bot=@${me.user} team=${me.team} channels=${targetChannels.join(',')} mode=${cfg.replyMode}`)
+    log(`starting — bot=@${me.name} team=${me.team ?? '-'} channels=${targetChannels.join(',')} mode=${cfg.replyMode}`)
     log(`session cwd=${cwd}  state=${stateDir}  mapped sessions=${Object.keys(state.sessions).length}`)
     if (cfg.injectInstructions) {
       const probe = await contextPreamble()
@@ -1227,8 +1109,11 @@ export function apply(ctx, config) {
       log('context injection: disabled')
     }
 
-    botUserId = me.user_id
-    await connect()
+    await transport.connect({
+      onMessage: (message: InboundMessage) => {
+        handleEvent(message).catch((e) => log('handleEvent threw', String(e)))
+      },
+    })
   }
 
   // ── Lifecycle: close the socket when the plugin unloads ───────────────────
@@ -1236,22 +1121,26 @@ export function apply(ctx, config) {
    * Startup keeps retrying too: if the credentials are temporarily unresolvable
    * or the network is down at boot, giving up would leave the bot silently dead.
    */
+  /** Set on unload, so in-flight retries stop instead of resurrecting the plugin. */
+  let stopped = false
+  let startFailures = 0
+  let startBackoff = 1000
+
   async function startWithRetry() {
     try { await start() }
     catch (e) {
       if (stopped) return
-      consecutiveFailures++
-      log(`startup failed (${consecutiveFailures} in a row): ${String(e?.message ?? e)} — retrying in ${backoff}ms`)
+      startFailures++
+      log(`startup failed (${startFailures} in a row): ${String(e?.message ?? e)} — retrying in ${startBackoff}ms`)
       setTimeout(() => {
-        backoff = Math.min(backoff * 2, 60000)
+        startBackoff = Math.min(startBackoff * 2, 60000)
         if (!stopped) startWithRetry()
-      }, backoff)
+      }, startBackoff)
     }
   }
 
   ctx.effect(() => {
     startWithRetry()
-    startWatchdog()
     startDeliveryWatcher()
     writeHealth()
     if (healthTimer === null) healthTimer = setInterval(writeHealth, cfg.heartbeatMs)
@@ -1260,10 +1149,12 @@ export function apply(ctx, config) {
       if (healthTimer !== null) clearInterval(healthTimer)
       health.connected = false
       writeHealth()
-      if (reconnectTimer !== null) clearTimeout(reconnectTimer)
-      if (watchdogTimer !== null) clearInterval(watchdogTimer)
-      const hadSocket = ws !== null
-      try { ws?.close() } catch { /* ignore */ }
+      // The transport owns the socket and its timers now. Read whether one is open
+      // before closing, so the log line stays synchronous and still distinguishes
+      // "closed a socket" from "never had one" — the misleading case that once made
+      // a live outage look plausible.
+      const hadSocket = transport.hasSocket()
+      void transport.close()
       log(hadSocket ? 'plugin unloading — socket closed' : 'plugin unloading — no socket was open')
     }
   }, 'deepbot: socket-mode')
