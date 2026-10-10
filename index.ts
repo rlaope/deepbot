@@ -57,6 +57,11 @@ import { createProgressTracker } from './progress.js'
 import type { SlackHistoryResponse } from './types/slack.js'
 import type { InboundMessage } from './types/transport.js'
 import type { Origin, TurnOutcome, TurnSummary } from './types/core.js'
+import type {
+  AgentDefaultModelService, AgentsService, AgentPresetsService, AttachmentsService,
+  CredentialsService, FileSystemService, PermissionPresetsService, SessionProjectionsService,
+  SessionQueryService, SessionsService, WorkspaceRegistryService,
+} from './types/dsh.js'
 
 export const name = 'deepbot'
 
@@ -333,7 +338,7 @@ export function apply(ctx, config) {
   // An empty value means "absent" everywhere in the harness. process.env is the
   // highest-priority layer, so it doubles as the fallback here.
   async function credential(ref) {
-    const creds = ctx.get('credentials')
+    const creds = ctx.get('credentials') as CredentialsService | undefined
     if (creds?.resolve) {
       try {
         const r = await creds.resolve(ref)
@@ -353,7 +358,7 @@ export function apply(ctx, config) {
     if (cwdPromise === null) {
       cwdPromise = (async () => {
         try {
-          const fsSvc = ctx.get('fs')
+          const fsSvc = ctx.get('fs') as FileSystemService | undefined
           if (fsSvc?.resolve && fsSvc?.processPath) return fsSvc.processPath(await fsSvc.resolve('.'))
         } catch (e) { log('fs service unavailable for cwd — using process.cwd()', String(e)) }
         return process.cwd()
@@ -507,7 +512,7 @@ export function apply(ctx, config) {
    */
   async function admitImages(images): Promise<unknown[]> {
     if (!Array.isArray(images) || images.length === 0) return []
-    const attachments = ctx.get('attachments')
+    const attachments = ctx.get('attachments') as AttachmentsService | undefined
     if (!attachments?.saveImages) {
       log('images: the attachments service is not composed — the model gets paths, not pictures')
       return []
@@ -876,9 +881,9 @@ export function apply(ctx, config) {
    * @returns {Promise<{text: string, reason: unknown, sessionId: string}>}
    */
   async function runTurn(prompt: string, existingSessionId: string | undefined, origin: Origin | null = null, historyText = '', attachmentText = '', sessionKey: string | null = null, images: unknown[] = []): Promise<TurnOutcome> {
-    const agents = ctx.get('agents')
-    const sessions = ctx.get('sessions')
-    const defaultModel = ctx.get('agentDefaultModel')
+    const agents = ctx.get('agents') as AgentsService | undefined
+    const sessions = ctx.get('sessions') as SessionsService | undefined
+    const defaultModel = ctx.get('agentDefaultModel') as AgentDefaultModelService | undefined
     if (!agents || !sessions || !defaultModel) throw new Error('deepbot: agents/sessions/agentDefaultModel missing')
 
     // The same selection is used for create and resume.
@@ -892,9 +897,9 @@ export function apply(ctx, config) {
     // MODEL_SELECTION: upstream additionally calls installModelSelection here;
     // that helper lives in @deepseek-ai/dsh-agent and is not importable from a
     // profile-installed plugin, so `agentOptions` carries the model instead.
-    const agentPresets = ctx.get('agentPresets')
-    const permissionPresets = ctx.get('permissionPresets')
-    const workspaceRegistry = ctx.get('workspaceRegistry')
+    const agentPresets = ctx.get('agentPresets') as AgentPresetsService | undefined
+    const permissionPresets = ctx.get('permissionPresets') as PermissionPresetsService | undefined
+    const workspaceRegistry = ctx.get('workspaceRegistry') as WorkspaceRegistryService | undefined
 
     // Fail loud rather than degrade silently. An earlier version guarded this
     // with `if (cfg.agentPreset && agentPresets)`, so a missing service or a typo
@@ -972,12 +977,16 @@ export function apply(ctx, config) {
       handle = await adopt(existingSessionId)
     } catch (e) {
       activeTurns.delete(sessionId)
-      await scope?.[Symbol.asyncDispose]?.().catch(() => {})
+      // AsyncDisposable yields a PromiseLike, which has no .catch: resolve it first rather
+        // than relying on the service happening to return a real Promise.
+        await Promise.resolve(scope?.[Symbol.asyncDispose]?.()).then(() => {}, () => {})
       throw e
     }
     const agent = handle?.agent
     if (!agent?.followup || !agent?.whenIdle) {
-      await scope?.[Symbol.asyncDispose]?.().catch(() => {})
+      // AsyncDisposable yields a PromiseLike, which has no .catch: resolve it first rather
+        // than relying on the service happening to return a real Promise.
+        await Promise.resolve(scope?.[Symbol.asyncDispose]?.()).then(() => {}, () => {})
       throw new Error('deepbot: agents.create/resume did not return an Agent')
     }
 
@@ -1049,7 +1058,7 @@ export function apply(ctx, config) {
       // tokenUsage projection rather than the raw log, which carries no usage
       // events at all.
       try {
-        const projections = ctx.get('sessionProjections')
+        const projections = ctx.get('sessionProjections') as SessionProjectionsService | undefined
         const usage = projections?.snapshot?.(agent.session)?.values?.tokenUsage
         if (usage) {
           const cached = usage.cacheReadTokens ?? 0
@@ -1385,7 +1394,7 @@ export function apply(ctx, config) {
         const target = step.expectSessionTurn
         const sessionId = sessions[target.session ?? 'default']
         try {
-          const query = ctx.get('sessionQuery')
+          const query = ctx.get('sessionQuery') as SessionQueryService | undefined
           if (!query || !sessionId) throw new Error('no session to inspect')
           const observation = await query.observeSession(sessionId)
           const events = observation?.events ?? []
