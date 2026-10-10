@@ -303,7 +303,7 @@ history and nothing else.
 ## Layout
 
 ```
-index.js                    the Slack adapter plugin (zero dependencies)
+index.ts                    the Slack adapter plugin (built to dist/, zero runtime dependencies)
 cordis.patch.yml            its bundle patch (inserts the adapter row)
 profile/                    gateway profile: bundle list + the memory switch
 agent/AGENTS.md             identity and operating rules template
