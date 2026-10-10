@@ -263,7 +263,7 @@ Ordered by what blocks real use. Each row is a milestone, not a wish.
 | # | Gap | Why it matters | Approach | Acceptance |
 |---|---|---|---|---|
 | 1 | **Read isolation** | Two instances under one OS user can read each other's data; a B2B blocker | A sandbox *provider* plugin (its own profile and enforcement), or one OS user per instance | The isolation scenario passes and bash still works. Do not repeat the Seatbelt wrap: macOS refuses nested `sandbox-exec` |
-| 2 | **Vision** | Users send screenshots; the file arrives and the model cannot see it | Verify the model route accepts image parts, then send images as image content instead of a path | A screenshot question is answered from the image, not the filename |
+| 2 | **Vision** (scoped, see below) | Users send screenshots; the file arrives and the model cannot see it | Verify the model route accepts image parts, then send images as image content instead of a path | A screenshot question is answered from the image, not the filename |
 | 3 | **Interrupt** ✅ done | A long turn cannot be stopped | `agent.cancel()` wired to a chat command and to the approval seam | A turn stops mid-flight and the chat says so |
 | 4 | **Real progress** ✅ done | One static placeholder; the user cannot tell what is happening | A tracker that creates one message when the turn turns slow and edits it with tool names and elapsed time, throttled; the answer replaces it | `progress.test.mjs` 18 checks; the timer path is reached in `test/scenarios/interrupt.json` ("progress message failed: slack transport is not authenticated" — no Slack client in scenario mode, which is the point) |
 | 5 | **Browser / computer use** | Many asks are "open this and check"; Hermes has it, DSH ships nothing | A tool plugin over a local headless browser (CDP), sandboxed to the agent home | A page is opened, read, and quoted with a source link |
@@ -274,6 +274,38 @@ Ordered by what blocks real use. Each row is a milestone, not a wish.
 | 10 | **Ops** | Log rotation, backup/restore, crash-loop detection, a Linux/systemd install | Service-layer additions | A restore reproduces a home; the installer works on Linux |
 | 11 | **Prompt-injection defence** | Fetched material is framed as content and nothing enforces it | Keep the framing, flag instruction-like content in fetched material | A channel message saying "ignore your instructions" does not change behaviour |
 | 12 | **Releases** | No version, no changelog, no artifact | Semver, CHANGELOG, a tag per milestone | A tagged release installs from a clean clone |
+
+### M7.2 Vision — what was found while scoping it
+
+The route is image-capable, and the harness already carries the whole path:
+
+- `dsh-llm-pi-ai` has image budgets (`requestImagePixelBudget` 4,194,304;
+  `requestImageMaxBytes` 1 MiB; `maxRequestImageBytes` 20 MiB aggregate).
+- `dsh-llm` projects durable image blocks **only for image-capable models**:
+  "durable `ImageBlock` references become route-specific request versions only for
+  image-capable models; text-only models receive …" — so text-only deployments
+  degrade rather than fail.
+- The durable block shape is `{ type: 'image', attachment: <ref> }`, where the ref
+  comes from the attachment service (`dsh-attachment`). Provider conversion happens
+  in the llm adapter: `dsh-llm-deepseek` builds
+  `{ type: 'image', source: { type: 'base64', media_type, data } }`.
+- `dsh-commands` admits encoded images with `admitEncodedImages(store, images)`.
+
+So the work is: admit the bytes the transport already downloads through the
+attachment service, then send content blocks
+`[{ type: 'text' }, { type: 'image', attachment: ref }]` instead of a path in text.
+The next unknown to pin down is the composed service name and its admit API
+(`ctx.get('attachment')`?), which is a lookup, not a design question.
+
+**Verification must go through the harness**: `OG_API_KEY` lives in the encrypted
+credential store, so this repository cannot call the route directly. A scenario that
+puts a real PNG in the agent home and asks what is in it is an end-to-end answer no
+stub can give — the model either sees the image or it does not.
+
+```
+{ "session": "V", "say": "attachments/ 안의 이미지 파일을 보고 무슨 색인지 한 단어로 답해",
+  "expectContains": "<the colour that was actually drawn>" }
+```
 
 ### Non-goals
 
