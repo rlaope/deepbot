@@ -233,6 +233,12 @@ lookup, and the history ring.
 
 ## Approvals over chat (implemented, disabled by default)
 
+**The policy on these deployments stays `never`, not `ask`.** With `ask`, a request that
+the answerer never sees does not fail — it waits, and the turn is frozen until the
+timeout. Measured on the approval scenario: with `attended` the scenario hung and was
+cancelled fifteen minutes later; with `unattended` the same command is denied in a second
+with a clear reason. A refusal the model can read beats a silence it cannot.
+
 The harness raises a one-shot approval for actions that need a human. This adapter can
 answer those in the conversation: it posts the request, and `허용` / `거부` in the thread
 settles it. It also gates destructive commands — `rm`, `sudo`, `dd if=`, `mkfs` — because
