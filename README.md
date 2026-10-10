@@ -231,6 +231,33 @@ counts as addressed (private chat, `@mention`, `text_mention`, a reply to the bo
 mention stripping, posting and replacing, the edit fallback, the two-step file
 lookup, and the history ring.
 
+## Images
+
+A picture that arrives as an attachment reaches the model **as a picture**. The
+transport downloads it, the core admits it through the harness's attachment service
+(`ctx.attachments.saveImages`), and the prompt carries
+`[{ type: 'text' }, { type: 'image', attachment: ref }]`. The service validates and
+normalizes before the message is accepted, and the route projection happens in the llm
+adapter — for image-capable models only, so a text-only deployment degrades to a
+filename rather than failing.
+
+**The model has to declare that it accepts images.** Without this the model is handed
+a text descriptor instead, and it will tell you so:
+
+```yaml
+# your provider's model entry — note `input`, not `inputModalities`
+- id: deepseek/deepseek-v4.1-flash-ultrafast
+  input: [text, image]
+```
+
+`inputModalities` is accepted by the config schema and **ignored by the resolver**,
+which reads `declaredInput(entry.input) ?? base?.input ?? request.defaultInput`. A
+wrongly named key fails silently, which is how it was found.
+
+Verified end to end by `test/scenarios/vision.json`: a solid-colour PNG from
+`test/fixtures/` is attached, and the assertion is on the colour — a fact nothing in
+the prompt reveals, so the answer can only come from seeing the image.
+
 ## Progress on a slow turn
 
 After `progressAfterMs` (8 seconds by default) a turn posts one message saying it is

@@ -454,13 +454,49 @@ export function apply(ctx, config) {
     }
     return value
   }
-  function userMessage(text) {
+  /**
+   * One user message. Accepts plain text or a prepared block list — an image is a
+   * block alongside the text, not a replacement for it.
+   */
+  function userMessage(content: string | unknown[]) {
+    const blocks = typeof content === 'string' ? [{ type: 'text', text: content }] : content
     return deepFreeze(structuredClone({
-      content: [{ type: 'text', text }],
+      content: blocks,
       source: { kind: 'user' },
       role: 'user',
       id: randomUUID(),
     }))
+  }
+
+  /**
+   * Admit images through the attachment service, so the model is shown the picture
+   * instead of being told a filename.
+   *
+   * The service validates and normalises before the message is accepted, and the
+   * route projection happens in the llm adapter — for image-capable models only, so a
+   * text-only deployment degrades instead of failing. If the service is not composed,
+   * or refuses the image, this returns nothing: the manifest names the file and the
+   * agent can still open it with its own tools, which is what happens today.
+   */
+  async function admitImages(images): Promise<unknown[]> {
+    if (!Array.isArray(images) || images.length === 0) return []
+    const attachments = ctx.get('attachments')
+    if (!attachments?.saveImages) {
+      log('images: the attachments service is not composed — the model gets paths, not pictures')
+      return []
+    }
+    try {
+      const refs = await attachments.saveImages(images.map((image) => ({
+        data: new Uint8Array(image.bytes),
+        mediaType: image.mediaType,
+        ...(image.name !== undefined ? { name: image.name } : {}),
+      })))
+      log(`images: admitted ${refs.length} through the attachments service`)
+      return refs
+    } catch (e) {
+      log(`image admission refused: ${String(e?.message ?? e)} — the file path stays in the prompt`)
+      return []
+    }
   }
 
   // ── Agent-initiated delivery ──────────────────────────────────────────────
@@ -580,7 +616,7 @@ export function apply(ctx, config) {
    * Create a session (or resume one) and drive it to completion.
    * @returns {Promise<{text: string, reason: unknown, sessionId: string}>}
    */
-  async function runTurn(prompt: string, existingSessionId: string | undefined, origin: Origin | null = null, historyText = '', attachmentText = '', sessionKey: string | null = null): Promise<TurnOutcome> {
+  async function runTurn(prompt: string, existingSessionId: string | undefined, origin: Origin | null = null, historyText = '', attachmentText = '', sessionKey: string | null = null, images: unknown[] = []): Promise<TurnOutcome> {
     const agents = ctx.get('agents')
     const sessions = ctx.get('sessions')
     const defaultModel = ctx.get('agentDefaultModel')
@@ -735,7 +771,11 @@ export function apply(ctx, config) {
       await agent.whenIdle()
       const firstSeq = agent.session.seq
       const { preamble } = await contextPreamble(origin ?? null, historyText, attachmentText, sessionKey)
-      agent.followup(userMessage(preamble === '' ? prompt : `${preamble}[user message]\n${prompt}`))
+      const body = preamble === '' ? prompt : `${preamble}[user message]\n${prompt}`
+      const refs = await admitImages(images)
+      agent.followup(userMessage(refs.length === 0
+        ? body
+        : [{ type: 'text', text: body }, ...refs.map((attachment) => ({ type: 'image', attachment }))]))
       await agent.whenIdle()
       await sessions.flush(agent.session)
       // Refresh here, not in the Slack event handler: this is the one place every
@@ -909,13 +949,17 @@ export function apply(ctx, config) {
           historyLastTs = hist.lastTs
         } catch (e) { log(`history fetch threw: ${String(e?.message ?? e)}`) }
         let attachmentText = ''
-        try { attachmentText = (await transport.fetchAttachments(message, String(ts).replace('.', '-'))).text }
-        catch (e) { log(`attachment fetch threw: ${String(e?.message ?? e)}`) }
+        let attachmentImages: unknown[] = []
+        try {
+          const manifest = await transport.fetchAttachments(message, String(ts).replace('.', '-'))
+          attachmentText = manifest.text
+          attachmentImages = manifest.images ?? []
+        } catch (e) { log(`attachment fetch threw: ${String(e?.message ?? e)}`) }
         if (attachmentText !== '') log(`attachments: ${message.files.length} file(s) for ts=${ts}`)
 
         let r
         try {
-          r = await withTimeout(runTurn(prompt, state.sessions[key], { channel, threadTs }, historyText, attachmentText, key), cfg.runTimeoutMs)
+          r = await withTimeout(runTurn(prompt, state.sessions[key], { channel, threadTs }, historyText, attachmentText, key, attachmentImages), cfg.runTimeoutMs)
           // Advance the thread pointer only after the turn succeeded, so a failed
           // turn does not swallow messages it never delivered.
           if (historyLastTs !== null && r.reason?.kind === 'completed') {
@@ -1030,6 +1074,27 @@ export function apply(ctx, config) {
     }))
   }
 
+  /**
+   * Read a file a scenario wants the model to see. Without this the vision path
+   * could only be tested by a person sending a screenshot, which is not a test.
+   */
+  async function imageForStep(path) {
+    const cwd = await sessionCwd()
+    // Absolute, then the session directory, then this repository — so a fixture can
+    // live in the repo and the scenario stays portable.
+    const candidates = path.startsWith('/')
+      ? [path]
+      : [join(cwd, path), join(PROJECT_ROOT, path)]
+    const abs = candidates.find((candidate) => existsSync(candidate)) ?? candidates[0]
+    const bytes = readFileSync(abs)
+    const ext = abs.toLowerCase().split('.').pop() ?? ''
+    const mediaType = { png: 'image/png', jpg: 'image/jpeg', jpeg: 'image/jpeg', webp: 'image/webp', gif: 'image/gif' }[ext]
+      ?? 'application/octet-stream'
+    const name = abs.split('/').pop()
+    log(`  step attachment: ${name} (${mediaType}, ${bytes.length} bytes)`)
+    return { name, mediaType, bytes }
+  }
+
   async function runScenario(scriptPath) {
     const steps = JSON.parse(readFileSync(scriptPath, 'utf8')).steps ?? []
     const sessions = { ...seededSessions }
@@ -1130,7 +1195,8 @@ export function apply(ctx, config) {
         // A step can ask for its own turn to be interrupted, which is the only way to
         // test cancellation against the real agent rather than against a stub.
         const scenarioKey = `scenario:${name}`
-        const turn = withTimeout(runTurn(step.say, sessions[name], null, '', '', scenarioKey), cfg.runTimeoutMs)
+        const stepImages = step.attach === undefined ? [] : [await imageForStep(step.attach)]
+        const turn = withTimeout(runTurn(step.say, sessions[name], null, '', '', scenarioKey, stepImages), cfg.runTimeoutMs)
         const cancelTimer = typeof step.cancelAfterMs === 'number' && step.cancelAfterMs > 0
           ? setTimeout(() => cancelRunning(scenarioKey, 'scenario'), step.cancelAfterMs)
           : null

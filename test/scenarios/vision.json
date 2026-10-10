@@ -1,0 +1,15 @@
+{
+  "_comment": "Does the model actually see an attached image? The picture is a solid colour, which no text in the prompt reveals, so the answer can only come from seeing it. The colour is asserted, not the phrasing. The fixture lives in the repository so the scenario is portable.",
+  "steps": [
+    {
+      "session": "V",
+      "say": "첨부한 이미지에서 가장 넓은 면적을 차지하는 색은 무엇인가? 색 이름 한 단어로만 답해.",
+      "attach": "test/fixtures/vision-red.png",
+      "expectAnyOf": [
+        "빨강",
+        "빨간",
+        "red"
+      ]
+    }
+  ]
+}

@@ -19,7 +19,7 @@ import type {
   SlackHistoryResponse, SlackMember, SlackMembersResponse, SlackMessage,
   SlackPostResponse, SlackResponse, SlackUserInfoResponse,
 } from '../types/slack.js'
-import type { InboundMessage, PostedMessage, Target } from '../types/transport.js'
+import type { AttachmentManifest, InboundMessage, PostedMessage, Target, Transport } from '../types/transport.js'
 import { writeAttachments, type AttachmentSource } from './attachments.js'
 
 export function createSlackApi({ cfg, log, sessionCwd }) {
@@ -151,7 +151,7 @@ export function createSlackApi({ cfg, log, sessionCwd }) {
   async function fetchAttachments(botToken: string, files: SlackFile[] | undefined, stamp: string) {
     // SlackFile is structurally an AttachmentRef plus the download urls this
     // function needs, so the shared writer accepts it unchanged.
-    if (cfg.downloadAttachments !== true || !Array.isArray(files) || files.length === 0) return ''
+    if (cfg.downloadAttachments !== true || !Array.isArray(files) || files.length === 0) return { text: '', images: [] }
     const cwd = await sessionCwd()
     const sources: AttachmentSource[] = files.map((file) => ({
       name: file.name ?? file.id,
@@ -226,7 +226,21 @@ function isDirectChannel(channel: unknown): boolean {
   return typeof channel === 'string' && (channel.startsWith('D') || channel.startsWith('U'))
 }
 
-export function createSlackTransport(host: SlackTransportHost) {
+/**
+ * What a transport must satisfy, plus the three lifecycle calls the adapter itself
+ * needs. Declaring it is the difference between a seam and a comment: without this
+ * annotation the compiler never checked that a transport matches the interface, and
+ * one wrapper was quietly returning an object where the interface promised a string.
+ */
+export interface SlackTransport extends Transport {
+  authenticate(): Promise<void>
+  ready(): boolean
+  hasSocket(): boolean
+  /** Diagnostic only: raw channel history, used by the attachment probe. */
+  historyRaw(channel: string, limit?: number): Promise<SlackHistoryResponse>
+}
+
+export function createSlackTransport(host: SlackTransportHost): SlackTransport {
   const { cfg, log, credential, onHealth } = host
   const WebSocketImpl = host.WebSocketImpl ?? WebSocket
 
@@ -467,8 +481,7 @@ export function createSlackTransport(host: SlackTransportHost) {
     },
 
     async fetchAttachments(message: InboundMessage, stamp: string) {
-      const text = await api.fetchAttachments(requireToken(), message.files as SlackFile[], stamp)
-      return { text }
+      return api.fetchAttachments(requireToken(), message.files as SlackFile[], stamp)
     },
 
     /** Diagnostic only: raw history for the attachment probe. Not part of the interface. */

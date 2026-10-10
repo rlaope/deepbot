@@ -33,6 +33,10 @@
 #           - id: vendor/model-name
 #             name: My Model
 #             contextWindow: 200000
+#             # Declare image input if the route supports it, or an attached picture
+#             # reaches the model as a filename. The resolver reads `input`; a key named
+#             # inputModalities is accepted by the schema and silently ignored.
+#             input: [text, image]
 #
 # - id: agent-default-model
 #   config:

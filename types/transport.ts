@@ -59,6 +59,12 @@ export interface PostedMessage {
 export interface AttachmentManifest {
   /** Prompt-ready text describing what was fetched, or '' when there was nothing. */
   text: string
+  /**
+   * Images the model can be shown, when the transport downloaded any. The core
+   * admits these through the attachment service so a screenshot reaches the model
+   * as a picture rather than as a filename.
+   */
+  images?: Array<{ name?: string; mediaType: string; bytes: Buffer }>
 }
 
 export interface TransportStatus {
@@ -88,6 +94,9 @@ export interface Transport {
   /** Download a message's files into the agent home and describe them. */
   fetchAttachments(message: InboundMessage, stamp: string): Promise<AttachmentManifest>
 
-  /** Stop receiving and release the connection. */
-  close(): Promise<void>
+  /**
+   * Stop receiving and release the connection.
+   * @returns whether a connection was actually open, so callers can say so.
+   */
+  close(): Promise<boolean>
 }
