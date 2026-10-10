@@ -247,6 +247,40 @@ Gateway websocket with the message-content intent, native threads, attachments v
 CDN, buttons for approvals.
 **Acceptance:** the same round trip, plus a button action answered.
 
+### M6.5 Interactive approvals — where the dispatch investigation stands
+
+The seam dispatches with `scopeTarget(request.agent, request.agent)`. Its filter, read
+from `dsh-scope/lib/index.js`:
+
+> "admit untagged listeners globally, and admits tagged listeners for a matching key or
+> any of its ancestors (`bindScopeParent`) … A tag BELOW the dispatch key stays
+> excluded — events flow up the chain, never down."
+
+Measured, with the gate enabled and the policy `ask`:
+
+| Registered on | Result |
+|---|---|
+| the adapter's own scope (a bundle scope, tagged) | not admitted |
+| `agent.ctx` (a child of the dispatch key) | not admitted — "below the key" |
+| `ctx.root` (expected untagged) | not admitted |
+
+The session records `approval/asked` each time, so the request is raised and audited;
+the answerer is simply never called, and the turn then waits until the timeout.
+
+Next candidates, in the order worth trying:
+
+1. Find what carries the tag on this plugin's context — `ctx.root` may itself be tagged
+   by the profile mount, in which case the root of the *agent registry* is the target.
+2. Register through the service that owns the agent: the composition that mounted
+   `dsh-agent` is the ancestor the doc calls "one standing composition", and
+   `agents.create` may accept or expose a context.
+3. Ask the harness for an answerer registration API instead of a raw event listener —
+   `dsh-acp` and `dsh-api-remotes` both answer approvals, and both are first-party
+   compositions rather than third-party bundles.
+
+Until one of those works, `approvalPatterns: []` keeps the gate off and
+`defaultPreset: unattended` keeps the policy at `never`: a refusal the model can read
+beats a fifteen-minute silence.
 ### M6.5 Interactive approvals (mechanism done, dispatch unresolved)
 The policy is `never` today, so nothing hangs — but a user also cannot approve an
 escalation. The approval seam takes an answerer and each transport supplies one

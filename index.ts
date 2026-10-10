@@ -692,12 +692,31 @@ export function apply(ctx, config) {
     }
   }
 
-  /** The adapter's own scope. Kept for requests that arrive outside a live turn. */
+  /**
+   * Where the answerer has to live, and why.
+   *
+   * `dsh-user-approval` dispatches through `scopeTarget(request.agent, request.agent)`,
+   * whose filter admits untagged listeners globally and tagged listeners only for the
+   * dispatch key or one of its ancestors — "a tag BELOW the dispatch key stays
+   * excluded". This plugin's context carries a bundle scope tag, which is a *sibling*
+   * of the agent's scope, and `agent.ctx` is a *child* of it: both are excluded.
+   * Measured: the session recorded `approval/asked`, the answerer was never called, and
+   * the turn waited until the timeout.
+   *
+   * The root context carries no tag, so a listener there is admitted globally.
+   */
+  function answererContext(): any {
+    const root = (ctx as { root?: unknown }).root
+    return root ?? ctx
+  }
+
   let approvalListener = null
   function startApprovalAnswerer() {
-    if (cfg.approvalAnswerer !== true || approvalListener !== null || typeof ctx.on !== 'function') return
-    log('approval answerer registered on the adapter scope')
-    approvalListener = ctx.on('approval/request', async (request) => {
+    if (cfg.approvalAnswerer !== true || approvalListener !== null) return
+    const host = answererContext()
+    if (typeof host.on !== 'function') return
+    log(`approval answerer registered on ${host === ctx ? 'the adapter scope' : 'the root scope'}`)
+    approvalListener = host.on('approval/request', async (request) => {
       const sessionId = request?.agent?.session?.header?.id ?? request?.agent?.session?.id
       if (typeof sessionId !== 'string') return 'unavailable'
       const key = Object.keys(state.sessions).find((k) => state.sessions[k] === sessionId)
@@ -876,14 +895,6 @@ export function apply(ctx, config) {
     // *waiting* leaves the agent running, writing to the session, and eventually
     // delivering an answer nobody is waiting for any more.
     const turnKey = sessionKey ?? sessionId ?? ''
-    // The seam dispatches into the agent's scope, so the answerer has to live there
-    // for the duration of the turn.
-    let approvalDisposer = null
-    if (cfg.approvalAnswerer === true && turnKey !== '' && typeof agent.ctx?.on === 'function') {
-      log(`approval answerer registered on the agent scope for ${turnKey}`)
-      approvalDisposer = agent.ctx.on('approval/request', (request) => answerApprovalRequest(request, turnKey, progressTarget))
-    }
-
     const turnState = {
       cause: null as string | null,
       cancel: (reason: string) => {
@@ -953,7 +964,6 @@ export function apply(ctx, config) {
       // The timers belong to this turn and must not outlive it: a stale turn
       // timeout firing during a later turn in the same conversation would cancel
       // work nobody asked to stop.
-      try { approvalDisposer?.() } catch { /* already disposed */ }
       clearTimeout(turnTimeout)
       if (progressTimer !== null) clearTimeout(progressTimer)
       turnStartedAt.delete(turnKey)
