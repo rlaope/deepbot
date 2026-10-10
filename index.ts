@@ -50,6 +50,7 @@ import { appendFileSync, existsSync, mkdirSync, readFileSync, readdirSync, statS
 import { dirname, join, sep } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { createSlackTransport } from './transports/slack.js'
+import { createTelegramTransport } from './transports/telegram.js'
 import type { SlackHistoryResponse } from './types/slack.js'
 import type { InboundMessage } from './types/transport.js'
 import type { Origin, TurnOutcome, TurnSummary } from './types/core.js'
@@ -80,8 +81,12 @@ const DEFAULTS = {
   // exercised by talking to Slack itself. Later platforms arrive through the same
   // seam.
   transportFactory: undefined,
+  // Which platform to serve. Slack is the transport that ships and the default;
+  // Telegram needs only a token, which is why it is next.
+  platform: 'slack',
   botTokenRef: 'SLACK_BOT_TOKEN',
   appTokenRef: 'SLACK_APP_TOKEN',
+  telegramTokenRef: 'TELEGRAM_BOT_TOKEN',
   replyMode: 'mention',
   maxConcurrency: 2,
   runTimeoutMs: 15 * 60 * 1000,
@@ -478,9 +483,10 @@ export function apply(ctx, config) {
         const text = (event.data?.message?.content ?? [])
           .filter((b) => b.type === 'text').map((b) => b.text).join('').trim()
         if (text === '') return
+        // A key is either "channel" (no threads) or "channel:thread".
         const separator = key.indexOf(':')
-        const channel = key.slice(0, separator)
-        const threadTs = key.slice(separator + 1)
+        const channel = separator === -1 ? key : key.slice(0, separator)
+        const threadTs = separator === -1 ? null : key.slice(separator + 1)
         health.delivered = (health.delivered ?? 0) + 1
         writeHealth()
         if (!transport.ready()) { log(`agent-initiated message in ${sessionId} — no Slack client (scenario mode), not delivered`); return }
@@ -705,7 +711,9 @@ export function apply(ctx, config) {
   }
   const transport = cfg.transportFactory
     ? cfg.transportFactory(transportHost)
-    : createSlackTransport(transportHost)
+    : cfg.platform === 'telegram'
+      ? createTelegramTransport(transportHost)
+      : createSlackTransport(transportHost)
 
   // ── Concurrency ───────────────────────────────────────────────────────────
   const queue = []
@@ -736,8 +744,11 @@ export function apply(ctx, config) {
     if (!message.addressed) return
     if (alreadySeen(message.eventId)) { log(`duplicate event ignored event_id=${message.eventId}`); return }
 
-    const threadTs = target.threadTs ?? ts
-    const key = `${channel}:${threadTs}`
+    // Platforms with threads get a session per thread; platforms without one (a
+    // Telegram chat, for example) get a session per conversation. The transport
+    // says which by whether it supplies a thread.
+    const threadTs = target.threadTs
+    const key = threadTs === null ? channel : `${channel}:${threadTs}`
     const prompt = message.text.slice(0, cfg.maxPromptChars)
     if (!prompt) return
 
@@ -1070,7 +1081,7 @@ export function apply(ctx, config) {
         log(`attachment probe ${cfg.attachmentProbe} — message found=${found !== undefined}, files=${files.length}`)
         const manifest = (await transport.fetchAttachments({
           eventId: 'probe', target: { channel: probeChannel, threadTs: null }, ts: String(probeTs),
-          text: '', user: '', addressed: true, files, raw: {} as never,
+          text: '', user: '', addressed: true, files, raw: {},
         }, String(probeTs).replace('.', '-'))).text
         log(`----8<----\n${manifest}\n---->8----`)
       } catch (e) { log(`attachment probe failed: ${String(e?.stack ?? e)}`) }

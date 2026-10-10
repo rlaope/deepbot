@@ -12,13 +12,25 @@
  * mechanical. Reshaping it is the next step, and this file is the target.
  */
 
-import type { SlackEvent, SlackFile } from './slack.js'
+/**
+ * A file the platform told us about. Deliberately neutral: how to fetch it is the
+ * transport's business, and the fields every platform has are the ones here.
+ */
+export interface AttachmentRef {
+  id?: string
+  name?: string
+  mimetype?: string
+  size?: number
+}
 
 /** A conversation, in the transport's own terms. */
 export interface Target {
   /** Where the message goes: a channel, chat, or guild id. */
   channel: string
-  /** The thread or reply chain, when the platform has one. */
+  /**
+   * The thread or reply chain. null on a platform without threads (a Telegram
+   * chat), which makes the session per conversation rather than per thread.
+   */
   threadTs: string | null
 }
 
@@ -33,8 +45,9 @@ export interface InboundMessage {
   user: string
   /** True when the agent was addressed directly rather than observing chatter. */
   addressed: boolean
-  files: SlackFile[]
-  raw: SlackEvent
+  files: AttachmentRef[]
+  /** The platform's own payload, for a transport that needs to look deeper. */
+  raw: unknown
 }
 
 /** A rendered message the transport has already sent, so it can be replaced. */

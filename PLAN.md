@@ -235,7 +235,7 @@ gateway restarts with the same log lines.
 manifests and failure paths with no network and no account. This is the real reason
 to do the extraction; the second platform is the excuse.
 
-### M6.3 Telegram
+### M6.3 Telegram ✅ implemented (live round trip pending a bot token)
 Long polling — no websocket, no app-token dance. The cheapest second transport, and
 the one that proves the interface. Telegram has no threads, so a reply chain or a
 per-chat session key stands in.

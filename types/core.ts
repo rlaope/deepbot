@@ -29,5 +29,6 @@ export interface TurnOutcome extends TurnSummary {
 /** Where a message came from: the transport's idea of a conversation. */
 export interface Origin {
   channel: string
-  threadTs: string
+  /** null on platforms without threads: the session is per conversation. */
+  threadTs: string | null
 }

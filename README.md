@@ -193,6 +193,44 @@ Problems
     from every prompt. Trim it or move detail into memory/<topic>.md.
 ```
 
+## Transports
+
+One core, one transport per platform. The core owns thread→session mapping, the
+turn loop, the channel allowlist, memory, watches and reminders; a transport owns
+credentials, the connection, event parsing, rendering, history and attachments.
+
+| Platform | State | Notes |
+|---|---|---|
+| Slack | ships, live | Socket Mode; threads map to sessions |
+| Telegram | implemented, needs a token | long polling; **no threads**, so one session per chat |
+
+```yaml
+# cordis.patch.yml
+- id: deepbot
+  config:
+    platform: slack            # or 'telegram'
+    targetChannels: ['*']      # chat ids on Telegram
+```
+
+Telegram needs one credential:
+
+```bash
+cat >> "$DSH_HOME/.env" <<'EOF'
+TELEGRAM_BOT_TOKEN=<token from @BotFather>
+EOF
+```
+
+Two platform facts the Telegram transport is honest about: it has no history
+endpoint, so the conversation so far is served from a bounded ring of messages the
+process has seen — anything said before it started is genuinely unavailable — and a
+message edit can be refused (Telegram will not edit an old message), in which case
+the answer is sent as a new message rather than lost.
+
+`test/telegram.test.mjs` exercises the transport against a mocked Bot API: what
+counts as addressed (private chat, `@mention`, `text_mention`, a reply to the bot),
+mention stripping, posting and replacing, the edit fallback, the two-step file
+lookup, and the history ring.
+
 ## Prompt caching, and what gets injected
 
 Prompt caching reuses a stable prefix, so anything that changes early in the prompt
