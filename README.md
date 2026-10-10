@@ -9,7 +9,7 @@ conversations, and can speak first.
                         ┌──────────────────────────────────────────┐
    Slack  ──Socket Mode──▶  DSH gateway process                    │
                         │                                          │
-                        │  deepbot  (this repo, index.js)   │
+                        │  deepbot  (this repo, index.ts)   │
                         │      │  agents.create / agents.resume    │
                         │      ▼                                   │
                         │  agents  ──▶  session log (event-sourced)│
@@ -63,7 +63,7 @@ services whose public-contract status is uncertain — see
 
 Three layers, all in this repo:
 
-1. **`index.js`** — a Slack platform adapter as a DSH *bundle plugin*. It owns the
+1. **`index.ts`** (built to `dist/index.js`) — a Slack platform adapter as a DSH *bundle plugin*. It owns the
    Socket Mode connection, maps `channel:thread → sessionId`, drives one agent
    turn per message, and posts the answer back into the thread.
 2. **`profile/`** — the gateway profile. `dsh-base` + `dsh-web-app` +
