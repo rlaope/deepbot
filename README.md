@@ -203,13 +203,14 @@ credentials, the connection, event parsing, rendering, history and attachments.
 |---|---|---|
 | Slack | ships, live | Socket Mode; threads map to sessions |
 | Telegram | implemented, needs a token | long polling; **no threads**, so one session per chat |
+| Discord | implemented, needs a token | gateway websocket + REST; a thread is a channel, so one session per channel |
 
 ```yaml
 # cordis.patch.yml
 - id: deepbot
   config:
-    platform: slack            # or 'telegram'
-    targetChannels: ['*']      # chat ids on Telegram
+    platform: slack            # or 'telegram' | 'discord'
+    targetChannels: ['*']      # channel or chat ids on the other platforms
 ```
 
 Telegram needs one credential:
@@ -225,6 +226,20 @@ endpoint, so the conversation so far is served from a bounded ring of messages t
 process has seen — anything said before it started is genuinely unavailable — and a
 message edit can be refused (Telegram will not edit an old message), in which case
 the answer is sent as a new message rather than lost.
+
+Discord needs one credential too — a bot token, with the **MESSAGE_CONTENT** privileged
+intent enabled in the application, or every message arrives empty. The transport detects
+that case and says so instead of answering as if nothing had been said.
+
+```bash
+TELEGRAM_BOT_TOKEN=<token from @BotFather>
+DISCORD_BOT_TOKEN=<token from the Discord developer portal>
+```
+
+`test/discord.test.mjs` exercises the gateway handshake (Hello, the intents bitmask,
+READY), what counts as addressed (a DM, a `<@id>` mention, a reply to the bot), the
+content-less message, editing a progress message with a refused-edit fallback, history
+and its date-window delta, and attachments from the CDN — 25 checks, no network.
 
 `test/telegram.test.mjs` exercises the transport against a mocked Bot API: what
 counts as addressed (private chat, `@mention`, `text_mention`, a reply to the bot),

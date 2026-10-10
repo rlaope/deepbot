@@ -51,6 +51,7 @@ import { dirname, join, sep } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { createSlackTransport } from './transports/slack.js'
 import { createTelegramTransport } from './transports/telegram.js'
+import { createDiscordTransport } from './transports/discord.js'
 import { createProgressTracker } from './progress.js'
 import type { SlackHistoryResponse } from './types/slack.js'
 import type { InboundMessage } from './types/transport.js'
@@ -84,10 +85,11 @@ const DEFAULTS = {
   transportFactory: undefined,
   // Which platform to serve. Slack is the transport that ships and the default;
   // Telegram needs only a token, which is why it is next.
-  platform: 'slack',
+  platform: 'slack',   // 'slack' | 'telegram' | 'discord'
   botTokenRef: 'SLACK_BOT_TOKEN',
   appTokenRef: 'SLACK_APP_TOKEN',
   telegramTokenRef: 'TELEGRAM_BOT_TOKEN',
+  discordTokenRef: 'DISCORD_BOT_TOKEN',
   replyMode: 'mention',
   maxConcurrency: 2,
   runTimeoutMs: 15 * 60 * 1000,
@@ -1027,7 +1029,9 @@ export function apply(ctx, config) {
     ? cfg.transportFactory(transportHost)
     : cfg.platform === 'telegram'
       ? createTelegramTransport(transportHost)
-      : createSlackTransport(transportHost)
+      : cfg.platform === 'discord'
+        ? createDiscordTransport(transportHost)
+        : createSlackTransport(transportHost)
 
   // ── Concurrency ───────────────────────────────────────────────────────────
   const queue = []

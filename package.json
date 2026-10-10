@@ -42,7 +42,7 @@
     }
   },
   "scripts": {
-    "test": "node test/reconnect.test.mjs && node test/core.test.mjs && node test/telegram.test.mjs && node test/progress.test.mjs && node test/confined-runner.test.mjs && node test/delivery.test.mjs && node test/history.test.mjs && node test/attachments.test.mjs && node test/persona-check.test.mjs && node test/watch.test.mjs && node test/secrets.test.mjs .",
+    "test": "node test/reconnect.test.mjs && node test/core.test.mjs && node test/telegram.test.mjs && node test/discord.test.mjs && node test/progress.test.mjs && node test/confined-runner.test.mjs && node test/delivery.test.mjs && node test/history.test.mjs && node test/attachments.test.mjs && node test/persona-check.test.mjs && node test/watch.test.mjs && node test/secrets.test.mjs .",
     "test:scenario": "node test/run-scenario.mjs",
     "health": "node service/health-check.mjs --status",
     "test:restart": "node test/run-scenario.mjs test/scenarios/restart-1.json --dump /tmp/sessions.json && node test/run-scenario.mjs test/scenarios/restart-2.json --seed /tmp/sessions.json",
@@ -59,7 +59,8 @@
     "test:core": "node test/core.test.mjs",
     "test:telegram": "node test/telegram.test.mjs",
     "test:interrupt": "node test/run-scenario.mjs test/scenarios/interrupt.json",
-    "test:vision": "node test/run-scenario.mjs test/scenarios/vision.json"
+    "test:vision": "node test/run-scenario.mjs test/scenarios/vision.json",
+    "test:discord": "node test/discord.test.mjs"
   },
   "devDependencies": {
     "@types/node": "^26.6.4",

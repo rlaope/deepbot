@@ -21,6 +21,7 @@ jobs:
       - run: node test/reconnect.test.mjs
       - run: node test/core.test.mjs
       - run: node test/telegram.test.mjs
+      - run: node test/discord.test.mjs
       - run: node test/progress.test.mjs
       - run: node test/confined-runner.test.mjs
       - run: node test/delivery.test.mjs

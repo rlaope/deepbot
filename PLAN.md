@@ -242,7 +242,7 @@ per-chat session key stands in.
 **Acceptance:** a live round trip — message, answer, attachment, and a reminder
 delivered back into the same chat.
 
-### M6.4 Discord
+### M6.4 Discord ✅ implemented (live round trip pending a token)
 Gateway websocket with the message-content intent, native threads, attachments via
 CDN, buttons for approvals.
 **Acceptance:** the same round trip, plus a button action answered.
