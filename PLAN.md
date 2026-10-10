@@ -223,12 +223,13 @@ second copy of that logic.
 The core keeps what is already proven: thread→session mapping, the turn loop, the
 recall refresh, digest-gated standing context, watches, reminders, health.
 
-### M6.1 Extract the seam with no behaviour change
-Slack becomes `transports/slack.mjs`.
+### M6.1 Extract the seam with no behaviour change ✅ done
+Slack becomes `transports/slack.ts` — the Web API layer, then the Socket Mode connection,
+event parsing and rendering. The core no longer knows what a Slack event looks like.
 **Acceptance:** every existing test and scenario passes unchanged, and the live
 gateway restarts with the same log lines.
 
-### M6.2 A fake transport, so the core is testable without a platform
+### M6.2 A fake transport, so the core is testable without a platform ✅ done
 `test/fake-transport.mjs` drives the core in-process.
 **Acceptance:** tests cover mapping, delta history, progress replacement, attachment
 manifests and failure paths with no network and no account. This is the real reason

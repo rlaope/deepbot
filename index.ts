@@ -74,6 +74,12 @@ export const inject = [
 // Config is validated by hand instead of with a schemastery schema, to keep the
 // dependency surface at zero.
 const DEFAULTS = {
+  // Which transport to use. Slack is the one that ships; the factory seam exists so
+  // the core can be driven by a fake transport in tests — the core is the part with
+  // the turn loop, the mapping and the policy, and until now it could only be
+  // exercised by talking to Slack itself. Later platforms arrive through the same
+  // seam.
+  transportFactory: undefined,
   botTokenRef: 'SLACK_BOT_TOKEN',
   appTokenRef: 'SLACK_APP_TOKEN',
   replyMode: 'mention',
@@ -692,11 +698,14 @@ export function apply(ctx, config) {
   // Socket Mode connection and its reconnect loop, event parsing, rendering,
   // history deltas, attachments. The core keeps mapping, the turn loop, policy,
   // watches and reminders.
-  const transport = createSlackTransport({
+  const transportHost = {
     cfg, log, sessionCwd,
     credential: (ref: string) => credential(ref),
     onHealth: (patch: Record<string, unknown>) => { Object.assign(health, patch); writeHealth() },
-  })
+  }
+  const transport = cfg.transportFactory
+    ? cfg.transportFactory(transportHost)
+    : createSlackTransport(transportHost)
 
   // ── Concurrency ───────────────────────────────────────────────────────────
   const queue = []
