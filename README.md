@@ -231,6 +231,22 @@ counts as addressed (private chat, `@mention`, `text_mention`, a reply to the bo
 mention stripping, posting and replacing, the edit fallback, the two-step file
 lookup, and the history ring.
 
+## Stopping a running turn
+
+A turn can take minutes, and until now there was no way to interrupt one. Say
+`그만`, `중단`, `취소`, `멈춰`, `stop`, or `cancel` on its own in the thread and the
+turn is cancelled; the progress placeholder becomes the report, so there is no
+second message. With nothing running the answer is that there is nothing to stop,
+rather than a turn started just to say so.
+
+The same path serves the turn timeout. A timeout that only stops the *waiting* leaves
+the agent running, writing to the session, and eventually delivering an answer nobody
+is waiting for — so a timeout now cancels the work itself.
+
+The harness records a cancelled turn with no reason of its own, so the adapter — the
+party that asked for the stop — supplies it, and the user is told which happened:
+stopped on request, or stopped because it ran too long.
+
 ## Prompt caching, and what gets injected
 
 Prompt caching reuses a stable prefix, so anything that changes early in the prompt

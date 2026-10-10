@@ -143,6 +143,36 @@ function boot({ state = {}, config = {} } = {}) {
   t.done()
 }
 
+// 9. A stop request with nothing running says so, and does not start a turn.
+{
+  const t = boot()
+  await sleep(60)
+  t.transport.deliver(t.transport.message({ text: '그만' }))
+  await sleep(250)
+  check('a stop request starts no turn', t.transport.historyCalls.length === 0, `${t.transport.historyCalls.length} call(s)`)
+  check('and says there is nothing to stop', t.transport.posted.some((p) => /작업이 없습니다/.test(p.text)), JSON.stringify(t.transport.posted.map((p) => p.text)))
+  t.done()
+}
+
+// 10. The shapes people actually type are recognised, and nothing else is.
+{
+  for (const word of ['중단', 'stop', 'Cancel!', '멈춰']) {
+    const t = boot()
+    await sleep(60)
+    t.transport.deliver(t.transport.message({ text: word }))
+    await sleep(200)
+    check(`"${word}" is read as a stop request`, t.transport.historyCalls.length === 0 && t.transport.posted.length === 1, `${t.transport.historyCalls.length} turn(s)`)
+    t.done()
+  }
+  // A sentence that merely contains the word is a request, not a stop.
+  const t = boot()
+  await sleep(60)
+  t.transport.deliver(t.transport.message({ text: '이 작업 그만 두고 다른 걸 해줘' }))
+  await sleep(250)
+  check('a sentence containing the word is still a turn', t.transport.historyCalls.length === 1, `${t.transport.historyCalls.length} turn(s)`)
+  t.done()
+}
+
 const failed = results.filter((r) => !r.ok)
 console.log(`\n${results.length - failed.length}/${results.length} checks passed`)
 process.exit(failed.length === 0 ? 0 : 1)

@@ -57,7 +57,8 @@
     "prepare": "npm run build",
     "pretest": "npm run build",
     "test:core": "node test/core.test.mjs",
-    "test:telegram": "node test/telegram.test.mjs"
+    "test:telegram": "node test/telegram.test.mjs",
+    "test:interrupt": "node test/run-scenario.mjs test/scenarios/interrupt.json"
   },
   "devDependencies": {
     "@types/node": "^26.6.4",

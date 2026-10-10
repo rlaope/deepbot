@@ -1,0 +1,6 @@
+{
+  "_comment": "Can a running turn be stopped? The step asks for a command that keeps the turn busy, interrupts it while it runs, and asserts on how the turn ended. The prompt is deliberately slow: a turn that finishes before the cancel arrives would pass vacuously.",
+  "steps": [
+    { "session": "S", "say": "bash 로 `sleep 30` 을 실행하고, 끝나면 '끝났습니다'라고만 답해. 다른 도구는 쓰지 마.", "cancelAfterMs": 6000, "expectReason": "cancelled" }
+  ]
+}

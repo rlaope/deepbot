@@ -109,6 +109,10 @@ const DEFAULTS = {
   // reference and nothing fetched it.
   // Progress. A turn can take a minute, and a silent thread is indistinguishable
   // from a dead bot — the failure this project already had once.
+  // Words that mean "stop what you are doing". A turn can run for minutes with no
+  // way to interrupt it, which for a chat agent is the difference between a
+  // colleague and a runaway process.
+  cancelWords: ['그만', '중단', '취소', '멈춰', 'stop', 'cancel'],
   progressAfterMs: 8000,
   progressText: ':hourglass_flowing_sand: 작업 중입니다…',
   downloadAttachments: true,
@@ -469,6 +473,32 @@ export function apply(ctx, config) {
    * outside that set came from the agent itself.
    */
   const activeTurns = new Set()
+
+  /**
+   * Turns that are running right now, so one can be stopped.
+   *
+   * Keyed by conversation rather than by session id, because a conversation is what
+   * a person can name: the thread they are looking at. Both a timeout and a user
+   * asking to stop go through here, so there is one place where cancellation
+   * happens and one place to look when it does not.
+   */
+  const runningTurns = new Map<string, { cancel: (reason: string) => void; cause: string | null }>()
+
+  /** @returns whether anything was actually running. */
+  function cancelRunning(key: string, reason: string): boolean {
+    const entry = runningTurns.get(key)
+    if (entry === undefined) return false
+    log(`cancelling the running turn in ${key} (${reason})`)
+    entry.cause = reason
+    entry.cancel(reason)
+    return true
+  }
+
+  /** A whole message that is only "stop": the shapes a person actually types. */
+  function isCancelRequest(text: string): boolean {
+    const normalised = text.trim().toLowerCase().replace(/[.!?~,\s]+$/u, '')
+    return normalised !== '' && cfg.cancelWords.some((w: string) => normalised === w.toLowerCase())
+  }
   let deliveryWatcher = null
 
   function startDeliveryWatcher() {
@@ -624,6 +654,20 @@ export function apply(ctx, config) {
       catch (e) { log(`permissionPresets.set failed: ${String(e?.message ?? e)}`) }
     }
 
+    // Register before the turn starts, so a message arriving a second later can
+    // stop it. The timeout uses the same path: a timeout that only stops the
+    // *waiting* leaves the agent running, writing to the session, and eventually
+    // delivering an answer nobody is waiting for any more.
+    const turnKey = sessionKey ?? sessionId ?? ''
+    const turnState = {
+      cause: null as string | null,
+      cancel: (reason: string) => {
+        try { agent.cancel?.(reason) } catch (e) { log(`agent.cancel failed: ${String(e?.message ?? e)}`) }
+      },
+    }
+    runningTurns.set(turnKey, turnState)
+    const turnTimeout = setTimeout(() => { cancelRunning(turnKey, 'timed out') }, cfg.runTimeoutMs)
+
     try {
       await agent.whenIdle()
       const firstSeq = agent.session.seq
@@ -654,7 +698,12 @@ export function apply(ctx, config) {
         }
       } catch (e) { log(`token readout failed: ${String(e?.message ?? e)}`) }
       const outcome = summarize(agent.session, firstSeq)
-      return { text: outcome.text, reason: outcome.reason, toolsUsed: outcome.toolsUsed, sessionId }
+      // The harness records a cancelled turn with no reason of its own, so the
+      // adapter — which is the party that asked for the stop — supplies it. Without
+      // this a stopped turn reached the user as "the turn did not complete
+      // (unknown)", which tells them nothing about what happened.
+      const reason = outcome.reason ?? (turnState.cause !== null ? { kind: 'cancelled', cause: turnState.cause } : null)
+      return { text: outcome.text, reason, toolsUsed: outcome.toolsUsed, sessionId }
     } finally {
       // Release the agent after every turn. The log is persisted, so the next
       // turn can resume; keeping it alive would pile one agent per thread into
@@ -752,6 +801,19 @@ export function apply(ctx, config) {
     const prompt = message.text.slice(0, cfg.maxPromptChars)
     if (!prompt) return
 
+    // A stop request is not a turn. Answer it directly, and only if something is
+    // actually running — otherwise the honest reply is that there is nothing to
+    // stop, which is better than starting a turn to say so.
+    if (isCancelRequest(prompt)) {
+      const stopped = cancelRunning(key, 'user')
+      log(`cancel requested in ${key} — ${stopped ? 'stopped the running turn' : 'nothing was running'}`)
+      // When a turn was stopped, that turn reports it — it holds the progress
+      // placeholder, so the placeholder becomes the report instead of leaving a
+      // second message behind.
+      if (!stopped) await transport.post({ channel, threadTs }, '지금 돌고 있는 작업이 없습니다.')
+      return
+    }
+
     health.accepted++
     health.lastEventAt = Date.now()
     writeHealth()
@@ -806,6 +868,10 @@ export function apply(ctx, config) {
           writeHealth()
           log(`answered channel=${channel} len=${r.text.length} ${Date.now() - started}ms`)
           await transport.post(replyTarget, r.text, { replace: placeholderTs })
+        } else if (r.reason?.kind === 'cancelled') {
+          const why = r.reason.cause === 'timed out' ? '시간이 초과돼 중단했습니다.' : '중단했습니다.'
+          log(`turn cancelled cause=${String(r.reason.cause ?? '-')}`)
+          await transport.post(replyTarget, why, { replace: placeholderTs })
         } else {
           log(`turn ended abnormally reason=${JSON.stringify(r.reason)}`)
           await transport.post(replyTarget, `The turn did not complete (${r.reason?.kind ?? 'unknown'}). Log: ${LOG}`, { replace: placeholderTs })
@@ -993,7 +1059,15 @@ export function apply(ctx, config) {
       }
       const name = step.session ?? 'default'
       try {
-        const r = await withTimeout(runTurn(step.say, sessions[name], null, '', '', `scenario:${name}`), cfg.runTimeoutMs)
+        // A step can ask for its own turn to be interrupted, which is the only way to
+        // test cancellation against the real agent rather than against a stub.
+        const scenarioKey = `scenario:${name}`
+        const turn = withTimeout(runTurn(step.say, sessions[name], null, '', '', scenarioKey), cfg.runTimeoutMs)
+        const cancelTimer = typeof step.cancelAfterMs === 'number' && step.cancelAfterMs > 0
+          ? setTimeout(() => cancelRunning(scenarioKey, 'scenario'), step.cancelAfterMs)
+          : null
+        let r
+        try { r = await turn } finally { if (cancelTimer !== null) clearTimeout(cancelTimer) }
         if (r.sessionId) sessions[name] = r.sessionId
         const text = r.text ?? ''
         const checks = []
@@ -1012,16 +1086,24 @@ export function apply(ctx, config) {
           const hit = step.expectAnyOf.find((phrase) => text.includes(phrase))
           checks.push({ what: `says it does not know (one of ${step.expectAnyOf.join(' / ')})`, ok: hit !== undefined })
         }
+        if (step.expectReason !== undefined) {
+          checks.push({ what: `turn reason is ${JSON.stringify(step.expectReason)} (saw ${JSON.stringify(r.reason?.kind ?? null)})`, ok: r.reason?.kind === step.expectReason })
+        }
         if (Array.isArray(step.expectToolUse) && step.expectToolUse.length > 0) {
           const used = r.toolsUsed ?? []
           const hit = step.expectToolUse.some((t) => used.includes(t))
           checks.push({ what: `used one of ${step.expectToolUse.join('/')} (saw: ${used.join('/') || 'none'})`, ok: hit })
         }
         const failedChecks = checks.filter((c) => !c.ok)
-        const ok = r.reason?.kind === 'completed' && failedChecks.length === 0
+        // A step passes when its own expectations hold and the turn ended the way the
+        // step said it would. Without expectReason the norm is a completed turn; a
+        // step that asks to be interrupted declares that instead, because otherwise a
+        // deliberate cancellation can never pass.
+        const expected = step.expectReason ?? 'completed'
+        const ok = r.reason?.kind === expected && failedChecks.length === 0
         if (!ok) failed++
         results.push({ step: n, kind: 'turn', session: name, say: step.say, reason: r.reason?.kind, text, toolsUsed: r.toolsUsed ?? [], ok, failedChecks })
-        log(`  step ${n} [${name}] ${ok ? 'PASS' : 'FAIL'}${ok ? '' : ` (${[...failedChecks.map((c) => c.what), r.reason?.kind !== 'completed' ? `reason=${r.reason?.kind}` : ''].filter(Boolean).join(', ')})`}: ${JSON.stringify(text.slice(0, 240))}`)
+        log(`  step ${n} [${name}] ${ok ? 'PASS' : 'FAIL'}${ok ? '' : ` (${[...failedChecks.map((c) => c.what), r.reason?.kind !== expected ? `reason=${r.reason?.kind} (expected ${expected})` : ''].filter(Boolean).join(', ')})`}: ${JSON.stringify(text.slice(0, 240))}`)
       } catch (e) {
         failed++
         results.push({ step: n, kind: 'turn', session: name, say: step.say, ok: false, error: String(e?.message ?? e) })

@@ -264,7 +264,7 @@ Ordered by what blocks real use. Each row is a milestone, not a wish.
 |---|---|---|---|---|
 | 1 | **Read isolation** | Two instances under one OS user can read each other's data; a B2B blocker | A sandbox *provider* plugin (its own profile and enforcement), or one OS user per instance | The isolation scenario passes and bash still works. Do not repeat the Seatbelt wrap: macOS refuses nested `sandbox-exec` |
 | 2 | **Vision** | Users send screenshots; the file arrives and the model cannot see it | Verify the model route accepts image parts, then send images as image content instead of a path | A screenshot question is answered from the image, not the filename |
-| 3 | **Interrupt** | A long turn cannot be stopped | `agent.cancel()` wired to a chat command and to the approval seam | A turn stops mid-flight and the chat says so |
+| 3 | **Interrupt** ✅ done | A long turn cannot be stopped | `agent.cancel()` wired to a chat command and to the approval seam | A turn stops mid-flight and the chat says so |
 | 4 | **Real progress** | One static placeholder; the user cannot tell what is happening | Stream step boundaries and tool names into the placeholder, throttled | A long turn shows what it is doing, updated in place |
 | 5 | **Browser / computer use** | Many asks are "open this and check"; Hermes has it, DSH ships nothing | A tool plugin over a local headless browser (CDP), sandboxed to the agent home | A page is opened, read, and quoted with a source link |
 | 6 | **Cost per user** | Spend is invisible; the projection exists and is unused | Read `tokenUsage` per session, aggregate per channel and user, add a report command | `@bot usage` answers with tokens, cache ratio, and turns |
