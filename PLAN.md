@@ -297,7 +297,29 @@ attachment service, then send content blocks
 The next unknown to pin down is the composed service name and its admit API
 (`ctx.get('attachment')`?), which is a lookup, not a design question.
 
-**Verification must go through the harness**: `OG_API_KEY` lives in the encrypted
+**The API, pinned down:**
+
+- The seam surface is `ctx.attachments` (`dsh-attachment`), and the code that backs
+  it is `dsh-attachment-local`, both already in the profile.
+- The service call is `attachments.saveImages(inputs)`, where each input is
+  `{ data: Uint8Array, mediaType, name? }` and the return is durable references in
+  the same order. The exported helper `admitEncodedImages` is only
+  `attachments.saveImages(images.map(saveInput))`, and `saveInput` is a base64 decode
+  — so the helper is not needed and, importantly, **cannot be imported**: this plugin
+  resolves modules from its own directory, and harness packages live in the profile's
+  graph, not in `~/deepbot/node_modules`. The service call is the whole integration.
+- The prompt block is `{ type: 'image', attachment: ref }`, alongside
+  `{ type: 'text', text }`. `userMessage()` currently builds one text block and has to
+  accept a list.
+- Degrade, do not break: if the service is missing or admission refuses the image,
+  keep today's behaviour (a path in the text) and log it.
+
+**Verification**: the plan is a scenario step that carries an image — the runner reads
+the file, admits it through the same service, and passes the refs into `runTurn`, so
+the assertion is on whether the model describes what is actually in the picture. A
+stub cannot answer that question in either direction.
+
+`OG_API_KEY` lives in the encrypted
 credential store, so this repository cannot call the route directly. A scenario that
 puts a real PNG in the agent home and asks what is in it is an end-to-end answer no
 stub can give — the model either sees the image or it does not.
