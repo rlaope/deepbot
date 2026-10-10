@@ -92,7 +92,10 @@ if [ ! -x /usr/bin/sandbox-exec ]; then
 fi
 
 mkdir -p "$STATE_DIR" 2>/dev/null || true
-sb_file="$(mktemp "${TMPDIR:-/tmp}/deepbot-confine-XXXXXX.sb")" || exit 70
+# BSD mktemp requires the X's at the END of the template. A suffix after them makes it
+# create one literal name, so two commands at once collide and the second dies with
+# "mkstemp failed: File exists" — which is a command that never ran, not a denial.
+sb_file="$(mktemp "${TMPDIR:-/tmp}/deepbot-confine.XXXXXX")" || exit 70
 profile > "$sb_file" || { rm -f "$sb_file"; exit 70; }
 
 /usr/bin/sandbox-exec -f "$sb_file" "${command[@]}"

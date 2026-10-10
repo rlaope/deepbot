@@ -8,6 +8,8 @@
  *
  * Run: node test/progress.test.mjs
  */
+import './dist-fresh.mjs'   // fails loudly on a stale dist
+
 import { createProgressTracker } from '../dist/progress.js'
 
 const results = []

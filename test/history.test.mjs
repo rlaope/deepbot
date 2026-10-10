@@ -13,6 +13,8 @@
  *
  * Run: node test/history.test.mjs
  */
+import './dist-fresh.mjs'   // fails loudly on a stale dist
+
 import { mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'

@@ -13,6 +13,8 @@
  * Run: node test/delivery.test.mjs
  */
 
+import './dist-fresh.mjs'   // fails loudly on a stale dist
+
 import { mkdtempSync, rmSync, writeFileSync, readFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'

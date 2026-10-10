@@ -247,7 +247,7 @@ Gateway websocket with the message-content intent, native threads, attachments v
 CDN, buttons for approvals.
 **Acceptance:** the same round trip, plus a button action answered.
 
-### M6.5 Interactive approvals
+### M6.5 Interactive approvals (mechanism done, dispatch unresolved)
 The policy is `never` today, so nothing hangs — but a user also cannot approve an
 escalation. The approval seam takes an answerer and each transport supplies one
 (Slack block actions, Discord buttons, Telegram callback queries).

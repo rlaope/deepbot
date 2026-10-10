@@ -231,6 +231,28 @@ counts as addressed (private chat, `@mention`, `text_mention`, a reply to the bo
 mention stripping, posting and replacing, the edit fallback, the two-step file
 lookup, and the history ring.
 
+## Approvals over chat (implemented, disabled by default)
+
+The harness raises a one-shot approval for actions that need a human. This adapter can
+answer those in the conversation: it posts the request, and `허용` / `거부` in the thread
+settles it. It also gates destructive commands — `rm`, `sudo`, `dd if=`, `mkfs` — because
+the sandbox allows those *inside* the workspace, where deleting the agent's own notes is
+legitimate, so a human should decide.
+
+**It is off by default (`approvalPatterns: []`) because the dispatch does not reach it.**
+`dsh-user-approval` dispatches with
+`ctx.waterfall(scopeTarget(request.agent, request.agent), "approval/request", …)`, and a
+listener registered on the adapter's scope — or on `agent.ctx` — was not reached.
+Measured: the session records `approval/asked`, the gate blocks the command, and the turn
+then waits until the timeout. Shipping that would hang a live bot for fifteen minutes on
+an `rm`, so the gate stays off until the dispatch point is identified. The gate and the
+answerer are unit-verified (`test/core.test.mjs`: request posted, 허용 → allowed-once,
+거부 → rejected, timeout → cancelled, and the fail-closed paths).
+
+A pattern list is also worth calling what it is: a speed bump, not a boundary. Asked to
+remove a file with `rm -rf`, the model used a safer `rm` instead and skipped a gate that
+listed only `rm -rf`.
+
 ## Read confinement
 
 The harness sandbox fences **writes**. Its macOS profile is allow-default with

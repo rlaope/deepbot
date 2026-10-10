@@ -13,6 +13,8 @@
  *
  * Run: node test/core.test.mjs
  */
+import './dist-fresh.mjs'   // fails loudly on a stale dist
+
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -34,10 +36,11 @@ function boot({ state = {}, config = {} } = {}) {
   }))
   const transport = createFakeTransport(config.fake ?? {})
   const logs = []
+  const listeners = {}
   const ctx = {
     get: () => undefined,
     effect: (fn) => fn(),
-    on: () => () => {},
+    on: (name, handler) => { (listeners[name] ??= []).push(handler); return () => {} },
     logger: { info: (l) => logs.push(String(l)) },
   }
   apply(ctx, {
@@ -48,7 +51,18 @@ function boot({ state = {}, config = {} } = {}) {
     ...config,
   })
   const read = () => JSON.parse(readFileSync(join(stateDir, 'sessions.json'), 'utf8'))
-  return { transport, logs, stateDir, read, done: () => rmSync(stateDir, { recursive: true, force: true }) }
+  /** Run the pre-execute gate the way the harness would. */
+  const gate = (exec) => {
+    const listeners_ = listeners['tools/pre-execute'] ?? []
+    if (listeners_.length === 0) return '(no gate)'
+    let delegated = false
+    const decision = listeners_[0](exec, () => { delegated = true; return { kind: 'allow' } })
+    return delegated ? 'delegated' : decision
+  }
+  /** Fire an approval request the way the harness would, and get the outcome back. */
+  const askApproval = (sessionId = 'slack-abc', reason = 'escalate sandbox to danger-full-access') =>
+    listeners['approval/request'][0]({ agent: { session: { header: { id: sessionId } } }, reason })
+  return { transport, logs, stateDir, read, askApproval, gate, done: () => rmSync(stateDir, { recursive: true, force: true }) }
 }
 
 // 1. An allowed message reaches the transport, with the thread it arrived in.
@@ -183,6 +197,86 @@ function boot({ state = {}, config = {} } = {}) {
   t.transport.deliver(t.transport.message({ text: '이 작업 그만 두고 다른 걸 해줘' }))
   await sleep(250)
   check('a sentence containing the word is still a turn', t.transport.historyCalls.length === 1, `${t.transport.historyCalls.length} turn(s)`)
+  t.done()
+}
+
+// 11. Approvals over chat: the request reaches the thread, and the answer settles it.
+{
+  const t = boot({ state: { sessions: { 'C_ALLOWED:t1': 'slack-abc' } } })
+  await sleep(60)
+  const outcome = t.askApproval()
+  await sleep(100)
+  check('an approval request is posted into the conversation', t.transport.posted.some((p) => /권한이 필요합니다/.test(p.text)), JSON.stringify(t.transport.posted.map((p) => p.text.slice(0, 40))))
+  check('the request says how to answer', t.transport.posted.some((p) => /허용/.test(p.text) && /거부/.test(p.text)))
+  t.transport.deliver(t.transport.message({ text: '허용' }))
+  check('answering 허용 allows the action once', await outcome === 'allowed-once', await outcome)
+  check('a decision is confirmed', t.transport.posted.some((p) => /허용했습니다/.test(p.text)))
+  check('the decision is logged', t.logs.some((l) => /approval in C_ALLOWED:t1 answered: allowed-once/.test(l)))
+  t.done()
+}
+
+// 12. Denying is a rejection, not a hang.
+{
+  const t = boot({ state: { sessions: { 'C_ALLOWED:t1': 'slack-abc' } } })
+  await sleep(60)
+  const outcome = t.askApproval()
+  await sleep(100)
+  t.transport.deliver(t.transport.message({ text: '거부' }))
+  check('answering 거부 rejects', await outcome === 'rejected', await outcome)
+  t.done()
+}
+
+// 13. Fail closed: no conversation to ask in, or a request already pending.
+{
+  const t = boot({ state: { sessions: { 'C_ALLOWED:t1': 'slack-abc' } } })
+  await sleep(60)
+  check('an unmapped session fails closed', await t.askApproval('slack-unmapped') === 'unavailable')
+  const first = t.askApproval()
+  await sleep(50)
+  check('a second request while one is pending fails closed', await t.askApproval() === 'unavailable')
+  t.transport.deliver(t.transport.message({ text: '허용' }))
+  check('and the first one still resolves', await first === 'allowed-once')
+  t.done()
+}
+
+// 14. An unrelated message while an approval is pending is still a turn.
+{
+  const t = boot({ state: { sessions: { 'C_ALLOWED:t1': 'slack-abc' } } })
+  await sleep(60)
+  const pending = t.askApproval()
+  await sleep(100)
+  t.transport.deliver(t.transport.message({ text: '이거 말고 다른 걸 해줘' }))
+  await sleep(250)
+  check('a message that is not a decision still becomes a turn', t.transport.historyCalls.length === 1, `${t.transport.historyCalls.length} turn(s)`)
+  check('and the approval is still pending', t.transport.posted.filter((p) => /허용했습니다|거부했습니다/.test(p.text)).length === 0)
+  t.transport.deliver(t.transport.message({ text: '거부' }))
+  check('until it is answered', await pending === 'rejected')
+  t.done()
+}
+
+// 15. A request nobody answers is cancelled, not left waiting forever.
+{
+  const t = boot({ state: { sessions: { 'C_ALLOWED:t1': 'slack-abc' } }, config: { approvalTimeoutMs: 150 } })
+  await sleep(60)
+  const outcome = await t.askApproval()
+  check('an unanswered approval is cancelled', outcome === 'cancelled', outcome)
+  check('and the timeout is logged', t.logs.some((l) => /approval in C_ALLOWED:t1 timed out/.test(l)))
+  t.done()
+}
+
+// 16. The gate asks for destructive commands, and only where a human can answer.
+{
+  const t = boot({ state: { sessions: { 'C_ALLOWED:t1': 'slack-abc' } } })
+  await sleep(60)
+  const exec = (command, sessionId = 'slack-abc', name = 'bash') => ({ name, arguments: { command }, agent: { session: { header: { id: sessionId } } } })
+  const asked = t.gate(exec('rm -rf memory'))
+  check('a destructive command is gated', asked?.kind === 'ask', JSON.stringify(asked))
+  check('the gate says what it saw', /rm -rf/.test(String(asked?.reason)), String(asked?.reason).slice(0, 80))
+  check('an ordinary command is not gated', t.gate(exec('ls -la')) === 'delegated')
+  check('another tool is not gated', t.gate(exec('rm -rf x', 'slack-abc', 'grep')) === 'delegated')
+  check('no conversation means no pretend question', t.gate(exec('rm -rf x', 'slack-unmapped')) === 'delegated')
+  check('the deferral is logged', t.logs.some((l) => /no conversation to ask in/.test(l)))
+  check('asking is logged', t.logs.some((l) => /asking for approval: "rm /.test(l)), t.logs.filter((l) => /asking/.test(l)).join(' | '))
   t.done()
 }
 

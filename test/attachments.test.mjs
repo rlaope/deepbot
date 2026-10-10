@@ -8,6 +8,8 @@
  *
  * Run: node test/attachments.test.mjs
  */
+import './dist-fresh.mjs'   // fails loudly on a stale dist
+
 import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'

@@ -117,6 +117,23 @@ const DEFAULTS = {
   // A progress edit is a message edit against a rate-limited API, so the message
   // says roughly what is happening, not every step of it.
   progressUpdateMs: 2500,
+  // Approvals over chat. The default policy is `ask`, and a deployment with no
+  // answerer fails closed — which is what this adapter was, deliberately, before it
+  // had one. With an answerer the request reaches the thread and a human decides;
+  // without a conversation to ask in, the outcome stays `unavailable`.
+  approvalAnswerer: true,
+  // Commands that destroy things inside the workspace, where the sandbox does not
+  // interfere. The sandbox cannot help here — deleting the agent's own notes is a
+  // legitimate operation — so a human decides. Empty disables the gate.
+  // Deliberately broad: a pattern list is a speed bump, not a boundary. Measured —
+  // asked to remove a file with `rm -rf`, the model used a safer `rm` instead, which
+  // skipped the gate entirely and deleted the file. Anything that deletes inside the
+  // workspace asks, because deletion there is irreversible and the sandbox allows it.
+  approvalPatterns: ['rm ', 'rmdir ', 'sudo ', 'dd if=', 'mkfs', 'shutdown', 'reboot', 'kill -9'],
+  approvalTools: ['bash', 'pwsh'],
+  approvalTimeoutMs: 600000,
+  approveWords: ['허용', '승인', '응', 'ㅇㅇ', 'yes', 'allow', 'ok', 'ㅇ'],
+  denyWords: ['거부', '아니', '안돼', 'no', 'deny', 'ㄴㄴ'],
   progressAfterMs: 8000,
   progressText: ':hourglass_flowing_sand: 작업 중입니다…',
   downloadAttachments: true,
@@ -553,6 +570,20 @@ export function apply(ctx, config) {
     return true
   }
 
+  /**
+   * Approvals waiting on a human, one per conversation.
+   *
+   * A request is raised inside a turn's tool call, so it is answered from the
+   * conversation that turn belongs to. Holding the resolver here is what lets an
+   * ordinary message ("허용") settle it instead of being read as a new turn.
+   */
+  const pendingApprovals = new Map<string, { resolve: (outcome: string) => void; askedAt: number; reason: string }>()
+
+  function wordIn(text: string, words: string[]): boolean {
+    const normalised = text.trim().toLowerCase().replace(/[.!?~,\s]+$/u, '')
+    return normalised !== '' && words.some((word) => normalised === word.toLowerCase())
+  }
+
   /** A whole message that is only "stop": the shapes a person actually types. */
   function isCancelRequest(text: string): boolean {
     const normalised = text.trim().toLowerCase().replace(/[.!?~,\s]+$/u, '')
@@ -608,6 +639,109 @@ export function apply(ctx, config) {
           .then(() => refreshIndex('agent-initiated'))
           .catch((e) => log('agent-initiated delivery failed', String(e?.message ?? e)))
       } catch (e) { log('delivery watcher error', String(e?.message ?? e)) }
+    })
+  }
+
+  /**
+   * Answer approval requests in the conversation the turn belongs to.
+   *
+   * The seam's answerer is a waterfall listener that returns one of
+   * `allowed-once` / `rejected` / `cancelled` / `unavailable`. Returning
+   * `unavailable` is the fail-closed outcome and also what happens when there is no
+   * conversation to ask in — a scenario run, or a session the adapter did not map.
+   */
+  /**
+   * Answer one approval request from the conversation the turn belongs to.
+   *
+   * Careful with where this is registered. `dsh-user-approval` dispatches the
+   * waterfall through `scopeTarget(request.agent, request.agent)`, so a listener on
+   * this plugin's own context — a sibling bundle scope, not an ancestor of the
+   * agent's — never runs. Measured: the session recorded `approval/asked` and the turn
+   * then sat there with the answerer never called. `agent.ctx` is the scope the seam
+   * dispatches into, so the answerer is registered per turn there.
+   */
+  async function answerApprovalRequest(request, key, target) {
+    try {
+      if (pendingApprovals.has(key)) {
+        log(`approval requested in ${key} while one is already pending — failing closed`)
+        return 'unavailable'
+      }
+      const reason = String(request?.displayReason ?? request?.reason ?? 'a sensitive action')
+      const asked = await transport.post(target, [
+        `:warning: 권한이 필요합니다: ${reason}`,
+        `실행하려면 *허용*, 거부하려면 *거부* 라고 답해주세요.`,
+        `(답이 없으면 ${Math.round(cfg.approvalTimeoutMs / 60000)}분 뒤 자동으로 거부됩니다.)`,
+      ].join('\n'))
+      if (asked === null) return 'unavailable'
+      log(`approval requested in ${key}: ${reason.slice(0, 120)}`)
+      return await new Promise<string>((resolve) => {
+        const timer = setTimeout(() => {
+          pendingApprovals.delete(key)
+          log(`approval in ${key} timed out — cancelling`)
+          resolve('cancelled')
+        }, cfg.approvalTimeoutMs)
+        pendingApprovals.set(key, {
+          askedAt: Date.now(),
+          reason,
+          resolve: (outcome) => { clearTimeout(timer); resolve(outcome) },
+        })
+      })
+    } catch (e) {
+      log(`approval answerer failed: ${String((e as Error)?.message ?? e)} — failing closed`)
+      return 'unavailable'
+    }
+  }
+
+  /** The adapter's own scope. Kept for requests that arrive outside a live turn. */
+  let approvalListener = null
+  function startApprovalAnswerer() {
+    if (cfg.approvalAnswerer !== true || approvalListener !== null || typeof ctx.on !== 'function') return
+    log('approval answerer registered on the adapter scope')
+    approvalListener = ctx.on('approval/request', async (request) => {
+      const sessionId = request?.agent?.session?.header?.id ?? request?.agent?.session?.id
+      if (typeof sessionId !== 'string') return 'unavailable'
+      const key = Object.keys(state.sessions).find((k) => state.sessions[k] === sessionId)
+      if (key === undefined) {
+        log('approval requested but this session is not mapped to a conversation — failing closed')
+        return 'unavailable'
+      }
+      return answerApprovalRequest(request, key, targetFromKey(key))
+    })
+  }
+
+  /**
+   * Ask before destructive commands.
+   *
+   * `tools/pre-execute` is the harness's allow/deny/ask gate and a listener returns
+   * `{ kind }`; `ask` runs the approval seam, which the answerer above resolves. The
+   * gate only asks when a human is reachable — with no mapped conversation it defers
+   * to the harness and its sandbox rather than pretending to ask.
+   */
+  let approvalGate = null
+  function startApprovalGate() {
+    if (approvalGate !== null || typeof ctx.on !== 'function') return
+    const patterns = Array.isArray(cfg.approvalPatterns) ? cfg.approvalPatterns.filter((p: unknown) => typeof p === 'string' && p !== '') : []
+    if (patterns.length === 0) return
+    approvalGate = ctx.on('tools/pre-execute', (exec, next) => {
+      try {
+        const name = exec?.name ?? exec?.toolName
+        if (!Array.isArray(cfg.approvalTools) || !cfg.approvalTools.includes(name)) return next()
+        const command = String(exec?.arguments?.command ?? '')
+        if (command === '') return next()
+        const pattern = patterns.find((p: string) => command.includes(p))
+        if (pattern === undefined) return next()
+        const sessionId = exec?.agent?.session?.header?.id ?? exec?.agent?.session?.id
+        const key = Object.keys(state.sessions).find((k) => state.sessions[k] === sessionId)
+        if (key === undefined) {
+          log(`destructive command "${pattern}" with no conversation to ask in — leaving it to the sandbox`)
+          return next()
+        }
+        log(`asking for approval: "${pattern}" in ${key}`)
+        return { kind: 'ask', reason: `destructive command matching "${pattern}": ${command.slice(0, 160)}` }
+      } catch (e) {
+        log(`approval gate failed: ${String((e as Error)?.message ?? e)} — deferring`)
+        return next()
+      }
     })
   }
 
@@ -742,6 +876,14 @@ export function apply(ctx, config) {
     // *waiting* leaves the agent running, writing to the session, and eventually
     // delivering an answer nobody is waiting for any more.
     const turnKey = sessionKey ?? sessionId ?? ''
+    // The seam dispatches into the agent's scope, so the answerer has to live there
+    // for the duration of the turn.
+    let approvalDisposer = null
+    if (cfg.approvalAnswerer === true && turnKey !== '' && typeof agent.ctx?.on === 'function') {
+      log(`approval answerer registered on the agent scope for ${turnKey}`)
+      approvalDisposer = agent.ctx.on('approval/request', (request) => answerApprovalRequest(request, turnKey, progressTarget))
+    }
+
     const turnState = {
       cause: null as string | null,
       cancel: (reason: string) => {
@@ -811,6 +953,7 @@ export function apply(ctx, config) {
       // The timers belong to this turn and must not outlive it: a stale turn
       // timeout firing during a later turn in the same conversation would cancel
       // work nobody asked to stop.
+      try { approvalDisposer?.() } catch { /* already disposed */ }
       clearTimeout(turnTimeout)
       if (progressTimer !== null) clearTimeout(progressTimer)
       turnStartedAt.delete(turnKey)
@@ -912,6 +1055,18 @@ export function apply(ctx, config) {
     const key = threadTs === null ? channel : `${channel}:${threadTs}`
     const prompt = message.text.slice(0, cfg.maxPromptChars)
     if (!prompt) return
+
+    // A pending approval turns the next message into a decision, so it is consumed
+    // here rather than starting a turn the human did not ask for.
+    const pending = pendingApprovals.get(key)
+    if (pending !== undefined && (wordIn(prompt, cfg.approveWords) || wordIn(prompt, cfg.denyWords))) {
+      const allowed = wordIn(prompt, cfg.approveWords)
+      pendingApprovals.delete(key)
+      log(`approval in ${key} answered: ${allowed ? 'allowed-once' : 'rejected'} after ${Math.round((Date.now() - pending.askedAt) / 1000)}s`)
+      pending.resolve(allowed ? 'allowed-once' : 'rejected')
+      await transport.post({ channel, threadTs }, allowed ? '허용했습니다 — 계속 진행합니다.' : '거부했습니다.')
+      return
+    }
 
     // A stop request is not a turn. Answer it directly, and only if something is
     // actually running — otherwise the honest reply is that there is nothing to
@@ -1202,7 +1357,14 @@ export function apply(ctx, config) {
           : null
         let r
         try { r = await turn } finally { if (cancelTimer !== null) clearTimeout(cancelTimer) }
-        if (r.sessionId) sessions[name] = r.sessionId
+        if (r.sessionId) {
+          sessions[name] = r.sessionId
+          // Register the scenario session in the real mapping, so the paths that key
+          // off a conversation (progress, approvals) behave as they do in production
+          // instead of silently taking their "no conversation" branch.
+          state.sessions[scenarioKey] = r.sessionId
+          saveState()
+        }
         const text = r.text ?? ''
         const checks = []
         if (step.expectContains !== undefined) checks.push({ what: `contains ${JSON.stringify(step.expectContains)}`, ok: text.includes(step.expectContains) })
@@ -1378,6 +1540,8 @@ export function apply(ctx, config) {
   ctx.effect(() => {
     startWithRetry()
     startDeliveryWatcher()
+    startApprovalAnswerer()
+    startApprovalGate()
     writeHealth()
     if (healthTimer === null) healthTimer = setInterval(writeHealth, cfg.heartbeatMs)
     return () => {

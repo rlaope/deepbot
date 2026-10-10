@@ -10,6 +10,8 @@
  *
  * Run: node test/telegram.test.mjs
  */
+import './dist-fresh.mjs'   // fails loudly on a stale dist
+
 import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
