@@ -21,8 +21,10 @@ confined reads, images, interruptible turns, and approvals over chat.
 - **Progress.** One message per conversation, edited in place with tool names and elapsed
   time, replaced by the answer.
 - **Approvals over chat.** A request is posted into the conversation and `허용` / `거부`
-  settles it. Destructive commands inside the workspace (where the sandbox permits deletion)
-  ask first.
+  settles it. A transport that can render buttons gets them (`supportsButtons`): Discord
+  posts an action row and the decision is made in place, with the interaction acknowledged
+  before the decision is handed over. Destructive commands inside the workspace — where the
+  sandbox permits deletion — ask first.
 - **Read confinement.** Commands run under `service/confined-runner.sh`; the file tools are
   fenced by a `tools/pre-execute` read scope over `read`, `read_image`, `grep` and `glob`.
 - **TypeScript.** Build toolchain and CI typecheck, hand-written declarations for the DSH
