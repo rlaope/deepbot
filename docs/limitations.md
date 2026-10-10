@@ -36,13 +36,15 @@ decision with a cost.
   the Socket Mode protocol; no live network interruption was induced.
 - **Attachment/thread edge cases.** Only plain threaded text has been exercised.
 
-- **Reads are not sandboxed, and wrapping the gateway does not fix it.** Writes are
-  confined to the agent home; reads are not. A parallel Seatbelt profile around the
-  gateway did stop the reads and then broke everything else: macOS refuses nested
-  `sandbox-exec`, so the harness's sandbox probe found no usable backend, refused
-  to run bash at all, and the agent asked to escalate to `danger-full-access` —
-  which hung, because no approval answerer exists. Reverted. A sandbox provider
-  plugin or per-instance OS separation is the real fix; neither is built.
+- **Reads are confined for commands and open for the fs tool.** `bash` runs under a
+  runner that denies reads of other instances' homes and retired bot data, with the
+  harness's write rules preserved; documents and the whole agent path still work
+  (verified). The `fs` tool's `read` is still unconfined: its fence restricts mutation
+  and explicitly not observation. Closing that needs a `ctx.fs` provider, which needs
+  a base class this plugin cannot import. Wrapping the gateway instead is not an
+  option — nested `sandbox-exec` is refused by macOS and the harness then refuses to
+  run commands at all.
+
 
 ## Design risks
 

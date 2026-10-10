@@ -129,20 +129,22 @@ Requirements that came directly from a real outage:
 - **One owner per FTS index path.**
 - **macOS TCC:** `launchd` cannot read `~/Documents`.
 - **Sandbox:** agent writes are confined to its home (`workspace-write`), fail-closed.
-- **Reads are NOT confined, and layering a profile outside the harness does not
-  work here.** The file sandbox fences mutations; reads pass through. An attempt to
-  wrap the whole gateway in a macOS Seatbelt profile that denied reads of other
-  instances' homes DID confine reads (4/4 on the isolation scenario) and BROKE the
-  harness's own sandbox: nested `sandbox-exec` is refused by macOS
-  (`sandbox_apply: Operation not permitted`), so the harness's functional probe
-  concluded "no sandbox backend is usable", refused to run bash at all, and the
-  agent responded by requesting an escalation to `danger-full-access` — a request
-  with no answerer, which hung the turn indefinitely. Verified, then reverted.
-  Read confinement therefore has to come from a sandbox *provider* (a plugin
-  implementing the sandbox seam with its own profile) or from a separate OS user
-  or container per instance. None of those are built. The split-operation decision
-  in §4 remains weakened: two instances under one OS user can read each other's
-  data.
+- **Reads are confined for commands, and open for the fs tool.** An agent's `bash`
+  runs under a sandbox runner that denies reads of every other agent home and of
+  retired bots' data (`service/confined-runner.sh`) while keeping the harness's write
+  rules exactly. Measured: `cat ~/.hermes/<canary>` fails with `Operation not
+  permitted`, a canary in another agent's home fails, and the write path (documents)
+  is unaffected.
+  The remaining hole is the **`fs` tool's read**: `dsh-fs-sandbox` documents that the
+  mutation fence "does not restrict observation", so `read` still reaches outside the
+  workspace. Closing it needs a `ctx.fs` provider, which needs the `FileSystem` base
+  class from `dsh-fs` — and this plugin resolves modules from its own directory, where
+  harness packages do not exist. That is the same constraint that shaped how images
+  are admitted (through the service, not the helper).
+  What is *not* an option: wrapping the whole gateway in a read-denying profile. macOS
+  refuses nested `sandbox-exec` (`sandbox_apply: Operation not permitted`), so the
+  harness's sandbox probe finds no backend, refuses to run commands at all, and the
+  agent asks to escalate into a request with no answerer. Verified, then reverted.
 
 ## 9. Success criteria
 

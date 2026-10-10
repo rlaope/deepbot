@@ -22,6 +22,7 @@ jobs:
       - run: node test/core.test.mjs
       - run: node test/telegram.test.mjs
       - run: node test/progress.test.mjs
+      - run: node test/confined-runner.test.mjs
       - run: node test/delivery.test.mjs
       - run: node test/history.test.mjs
       - run: node test/attachments.test.mjs

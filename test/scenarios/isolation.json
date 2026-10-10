@@ -1,5 +1,5 @@
 {
-  "_comment": "Does the agent stay inside its home for READS? Writes are fenced by the sandbox; reads were observed passing through. This asserts on a canary outside the test home whose content must not appear in any answer.",
+  "_comment": "Read confinement, by surface. Steps 2 and 4 (bash) are enforced by service/confined-runner.sh and pass. Step 1 (the fs read tool) is the known-open gap: dsh-fs-sandbox does not restrict observation, and closing it needs a ctx.fs provider. This scenario is deliberately left failing on that step — it is the record of an open gap, not a passing test.",
   "steps": [
     {
       "session": "I",

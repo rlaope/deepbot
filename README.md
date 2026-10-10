@@ -231,6 +231,35 @@ counts as addressed (private chat, `@mention`, `text_mention`, a reply to the bo
 mention stripping, posting and replacing, the edit fallback, the two-step file
 lookup, and the history ring.
 
+## Read confinement
+
+The harness sandbox fences **writes**. Its macOS profile is allow-default with
+`(deny file-write*)`, so a command an agent runs can read anything the user can —
+another instance's home, a retired bot's token file. Measured: unwrapped, the agent
+read a canary from a different agent's directory and answered with it.
+
+`service/confined-runner.sh` replaces the sandbox runner, so every command runs under
+a profile that adds read denials for the other instances' homes and for retired bot
+data, while honouring the harness's own policy arguments (workspace-write keeps the
+workspace and temp writable, read-only denies all writes).
+
+```yaml
+- id: sandbox
+  config:
+    runnerCommand: ['/absolute/path/to/service/confined-runner.sh']
+    runnerFailureSignatures: ['confined-runner:']
+```
+
+Wrapping the *gateway* in such a profile does not work and is not what this does:
+macOS refuses nested `sandbox-exec`, so the harness's sandbox probe finds no backend
+and refuses to run commands at all. Replacing the runner avoids the nesting entirely.
+
+**What this does not cover:** the `fs` tool's `read`. Its fence restricts mutation and
+documents that it does not restrict observation, so a read tool can still reach outside
+the workspace. Closing that needs a `ctx.fs` provider, which needs the `FileSystem`
+base class from `dsh-fs` — and this plugin resolves modules from its own directory,
+where harness packages do not exist.
+
 ## Images
 
 A picture that arrives as an attachment reaches the model **as a picture**. The
