@@ -16,7 +16,7 @@
 import { existsSync, readFileSync, readdirSync, statSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
-import { defaults } from '../index.js'
+import { defaults } from '../dist/index.js'
 import { findSecrets } from './secret-patterns.mjs'
 
 const home = process.argv[2] ?? join(homedir(), 'dsh-agent')

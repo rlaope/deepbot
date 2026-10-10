@@ -15,6 +15,9 @@ jobs:
           node-version: '22'
       # These drive apply() against mocks: a fake context, a fake WebSocket and a
       # fake fetch. They need no harness installation, which is why they run here.
+      - run: pnpm install --frozen-lockfile=false
+      - run: pnpm run typecheck
+      - run: pnpm run build
       - run: node test/reconnect.test.mjs
       - run: node test/delivery.test.mjs
       - run: node test/history.test.mjs

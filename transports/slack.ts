@@ -14,22 +14,26 @@
  */
 import { mkdirSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
+import type {
+  SlackAuthTestResponse, SlackHistoryResponse, SlackMember, SlackMembersResponse,
+  SlackMessage, SlackPostResponse, SlackResponse, SlackUserInfoResponse,
+} from '../types/slack.js'
 
 export function createSlackApi({ cfg, log, sessionCwd }) {
   // ── Slack Web API (built-in fetch) ────────────────────────────────────────
-  async function slackPost(token, method, body) {
+  async function slackPost<T extends SlackResponse = SlackResponse>(token: string, method: string, body: Record<string, unknown>): Promise<T> {
     const res = await fetch(`https://slack.com/api/${method}`, {
       method: 'POST',
       headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json; charset=utf-8' },
       body: JSON.stringify(body ?? {}),
     })
-    return res.json()
+    return (await res.json()) as T
   }
-  async function slackGet(token, method, params = {}) {
+  async function slackGet<T extends SlackResponse = SlackResponse>(token: string, method: string, params: Record<string, string> = {}): Promise<T> {
     const url = new URL(`https://slack.com/api/${method}`)
     for (const [k, v] of Object.entries(params)) url.searchParams.set(k, v)
     const res = await fetch(url, { headers: { Authorization: `Bearer ${token}` } })
-    return res.json()
+    return (await res.json()) as T
   }
 
   /**
@@ -50,7 +54,7 @@ export function createSlackApi({ cfg, log, sessionCwd }) {
     if (nameCache.size > 0) return
     let cursor
     for (let page = 0; page < MAX_NAME_PAGES; page++) {
-      const r = await slackGet(botToken, 'users.list', { limit: '200', ...(cursor ? { cursor } : {}) })
+      const r = await slackGet<SlackMembersResponse>(botToken, 'users.list', { limit: '200', ...(cursor ? { cursor } : {}) })
       if (!r.ok) { log(`users.list failed (${r.error}) — history will show raw ids`); return }
       for (const member of r.members ?? []) rememberMember(member)
       cursor = r.response_metadata?.next_cursor
@@ -65,7 +69,7 @@ export function createSlackApi({ cfg, log, sessionCwd }) {
       if (nameCache.has(id) || lookups >= 20) continue
       lookups++
       try {
-        const r = await slackGet(botToken, 'users.info', { user: id })
+        const r = await slackGet<SlackUserInfoResponse>(botToken, 'users.info', { user: id })
         if (r.ok) rememberMember(r.user)
       } catch { /* leave the raw id in place */ }
     }
@@ -88,12 +92,12 @@ export function createSlackApi({ cfg, log, sessionCwd }) {
    * channel cannot tell the agent what to do.
    */
   async function fetchHistoryText(botToken, channel, threadTs, currentTs, sinceTs = null) {
-    if (!cfg.fetchHistory) return ''
+    if (!cfg.fetchHistory) return { text: '', lastTs: null }
     await loadNames(botToken)
     const limit = Math.max(1, Math.min(200, Number(cfg.historyLimit)))
     const r = threadTs
-      ? await slackGet(botToken, 'conversations.replies', { channel, ts: threadTs, limit: String(limit) })
-      : await slackGet(botToken, 'conversations.history', { channel, limit: String(limit) })
+      ? await slackGet<SlackHistoryResponse>(botToken, 'conversations.replies', { channel, ts: threadTs ?? '', limit: String(limit) })
+      : await slackGet<SlackHistoryResponse>(botToken, 'conversations.history', { channel, limit: String(limit) })
     if (!r.ok) {
       log(`history fetch failed (${r.error}) — answering without it`)
       const hint = r.error === 'missing_scope' || r.error === 'not_in_channel'
@@ -193,8 +197,8 @@ export function createSlackApi({ cfg, log, sessionCwd }) {
       // The first chunk replaces the progress placeholder, so a slow turn leaves
       // one message that changes rather than a placeholder plus an answer.
       const r = replace !== null
-        ? await slackPost(botToken, 'chat.update', { channel, ts: replace, text: body })
-        : await slackPost(botToken, 'chat.postMessage', { channel, thread_ts: threadTs, text: body })
+        ? await slackPost<SlackPostResponse>(botToken, 'chat.update', { channel, ts: replace, text: body })
+        : await slackPost<SlackPostResponse>(botToken, 'chat.postMessage', { channel, thread_ts: threadTs, text: body })
       replace = null
       if (!r.ok) log(`${chunks.length > 1 ? 'reply' : 'reply'} post failed: ${r.error} — check the chat:write scope and channel membership`)
     }

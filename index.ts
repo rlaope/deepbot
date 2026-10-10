@@ -46,10 +46,14 @@
 
 import { execFile } from 'node:child_process'
 import { createHash, randomUUID } from 'node:crypto'
-import { appendFileSync, existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from 'node:fs'
-import { dirname, join } from 'node:path'
+import { appendFileSync, existsSync, mkdirSync, readFileSync, readdirSync, statSync, writeFileSync } from 'node:fs'
+import { dirname, join, sep } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { createSlackApi } from './transports/slack.mjs'
+import { createSlackApi } from './transports/slack.js'
+import type {
+  SlackAuthTestResponse, SlackConnectionResponse, SlackHistoryResponse, SlackPostResponse,
+} from './types/slack.js'
+import type { Origin, TurnOutcome, TurnSummary } from './types/core.js'
 
 export const name = 'deepbot'
 
@@ -213,6 +217,7 @@ export function apply(ctx, config) {
     consecutiveFailures: 0,
     accepted: 0,
     answered: 0,
+    delivered: 0,
     lastEventAt: null,
     lastError: null,
     updatedAt: Date.now(),
@@ -265,7 +270,7 @@ export function apply(ctx, config) {
       saveTimer = null
       try {
         const cutoff = Date.now() - 24 * 3600 * 1000
-        for (const [k, v] of Object.entries(state.seen)) if (v < cutoff) delete state.seen[k]
+        for (const [k, v] of Object.entries(state.seen) as Array<[string, number]>) if (v < cutoff) delete state.seen[k]
         writeFileSync(STATE, JSON.stringify(state, null, 1))
       } catch (e) { log('state write failed', String(e)) }
     }, 500)
@@ -488,7 +493,7 @@ export function apply(ctx, config) {
    * Create a session (or resume one) and drive it to completion.
    * @returns {Promise<{text: string, reason: unknown, sessionId: string}>}
    */
-  async function runTurn(prompt, existingSessionId, origin = null, historyText = '', attachmentText = '', sessionKey = null) {
+  async function runTurn(prompt: string, existingSessionId: string | undefined, origin: Origin | null = null, historyText = '', attachmentText = '', sessionKey: string | null = null): Promise<TurnOutcome> {
     const agents = ctx.get('agents')
     const sessions = ctx.get('sessions')
     const defaultModel = ctx.get('agentDefaultModel')
@@ -654,7 +659,7 @@ export function apply(ctx, config) {
    * Last assistant text and turn outcome over the owned interval.
    * Ported from the shipped one-shot runner's `summarize` (SessionSeq(n) -> n).
    */
-  function summarize(session, firstSeq) {
+  function summarize(session, firstSeq): TurnSummary {
     let started = false
     let text = ''
     let reason
@@ -745,7 +750,7 @@ export function apply(ctx, config) {
         const progressTimer = cfg.progressAfterMs > 0
           ? setTimeout(async () => {
               try {
-                const posted = await slackPost(botToken, 'chat.postMessage', { channel, thread_ts: threadTs, text: cfg.progressText })
+                const posted = await slackPost<SlackPostResponse>(botToken, 'chat.postMessage', { channel, thread_ts: threadTs, text: cfg.progressText })
                 if (posted.ok) { placeholderTs = posted.ts; log(`progress placeholder posted after ${cfg.progressAfterMs}ms`) }
               } catch { /* progress is best effort */ }
             }, cfg.progressAfterMs)
@@ -780,8 +785,9 @@ export function apply(ctx, config) {
     })
   }
 
-  function withTimeout(promise, ms) {
-    return new Promise((resolve, reject) => {
+  /** Generic so the caller keeps the turn's shape: `unknown` here is what forced casts at every call site. */
+  function withTimeout<T>(promise: Promise<T>, ms: number): Promise<T> {
+    return new Promise<T>((resolve, reject) => {
       const t = setTimeout(() => reject(new Error(`turn timed out after ${Math.round(ms / 1000)}s`)), ms)
       promise.then((v) => { clearTimeout(t); resolve(v) }, (e) => { clearTimeout(t); reject(e) })
     })
@@ -813,7 +819,7 @@ export function apply(ctx, config) {
     //   1) this endpoint requires the *app-level* token (xapp-), not the bot
     //      token — a bot token yields `not_allowed_token_type`.
     //   2) it is POST-only — a GET yields `insecure_request`.
-    const r = await slackPost(appToken, 'apps.connections.open', {})
+    const r = await slackPost<SlackConnectionResponse>(appToken, 'apps.connections.open', {})
     if (!r.ok) throw new Error(`apps.connections.open failed: ${r.error}`)
     return r.url
   }
@@ -930,15 +936,20 @@ export function apply(ctx, config) {
    * Deliberately does NOT connect to Slack — that is what makes it safe to run
    * while the live instance is serving.
    */
-  const PLUGIN_DIR = dirname(fileURLToPath(import.meta.url))
+  // The plugin is loaded from dist/index.js, so the directory of this module is
+  // dist/ — one level below the repository root that holds recall/. Resolving the
+  // indexer relative to the module therefore produced dist/recall/…, which does not
+  // exist, and the only symptom was a log line saying the indexer was not found
+  // while recall silently went stale.
+  const ENTRY_DIR = dirname(fileURLToPath(import.meta.url))
+  const PROJECT_ROOT = ENTRY_DIR.endsWith(`${sep}dist`) ? dirname(ENTRY_DIR) : ENTRY_DIR
   let indexInFlight = false
   let indexPending = false
 
   /** Where the indexer lives: configured, or the sibling directory in this repo. */
   function recallScriptPath() {
     if (typeof cfg.recallScript === 'string' && cfg.recallScript !== '') return cfg.recallScript
-    // This file sits at the repository root, next to recall/.
-    return join(PLUGIN_DIR, 'recall', 'deepbot-recall.mjs')
+    return join(PROJECT_ROOT, 'recall', 'deepbot-recall.mjs')
   }
 
   /**
@@ -953,7 +964,7 @@ export function apply(ctx, config) {
       const script = recallScriptPath()
       if (!existsSync(script)) { log(`auto-index: indexer not found at ${script}`); return }
       const cwd = await sessionCwd()
-      await new Promise((resolve) => {
+      await new Promise<void>((resolve) => {
         execFile(process.execPath, [script, 'index', '--quiet'],
           { env: { ...process.env, DEEPBOT_HOME: cwd }, timeout: 120000 },
           (err, _stdout, stderr) => {
@@ -973,7 +984,7 @@ export function apply(ctx, config) {
   function rebuildIndex() {
     const script = cfg.recallScript
     if (!script) return Promise.reject(new Error('a rebuildIndex step needs recallScript (DEEPBOT_RECALL_SCRIPT)'))
-    return sessionCwd().then((cwd) => new Promise((resolve, reject) => {
+    return sessionCwd().then((cwd) => new Promise<void>((resolve, reject) => {
       execFile(process.execPath, [script, 'index', '--quiet'],
         { env: { ...process.env, DEEPBOT_HOME: cwd }, timeout: 120000 },
         (err, _stdout, stderr) => err ? reject(new Error(`${err.message}${stderr ? ` — ${stderr}` : ''}`)) : resolve())
@@ -1158,7 +1169,7 @@ export function apply(ctx, config) {
       try {
         const token = await credential(cfg.botTokenRef)
         if (!token) throw new Error(`credential ${cfg.botTokenRef} not found`)
-        const history = await slackGet(token, 'conversations.history', { channel: probeChannel, limit: '50' })
+        const history = await slackGet<SlackHistoryResponse>(token, 'conversations.history', { channel: probeChannel, limit: '50' })
         if (!history.ok) throw new Error(`conversations.history failed: ${history.error}`)
         const message = (history.messages ?? []).find((m) => m.ts === probeTs)
         const files = message?.files ?? []
@@ -1198,7 +1209,7 @@ export function apply(ctx, config) {
     if (!botToken) throw new Error(`deepbot: credential ${cfg.botTokenRef} not found`)
     if (!appToken) throw new Error(`deepbot: credential ${cfg.appTokenRef} not found`)
 
-    const me = await slackGet(botToken, 'auth.test')
+    const me = await slackGet<SlackAuthTestResponse>(botToken, 'auth.test')
     if (!me.ok) throw new Error(`deepbot: auth.test failed (${me.error}) — check the bot token`)
 
     const cwd = await sessionCwd()

@@ -8,3 +8,5 @@ slack-state/
 attachments/
 memory/
 tools/**/*.tmp
+# Build output: produced by `npm run build`, verified by CI.
+dist/

@@ -29,6 +29,11 @@ AGENT_HOME="${DEEPBOT_HOME:-$HOME/.deepbot}"
 RUNTIME_DIR="${DEEPBOT_RUNTIME_DIR:-$AGENT_HOME/service}"
 PORT="${DEEPBOT_PORT:-19500}"
 PROFILE="${DEEPBOT_PROFILE:-agent}"
+# The repository this script came from: the gateway builds its TypeScript sources
+# from here when dist is missing or stale.
+# DIR is already `cd`-resolved, so build from that. Using $0 here resolved against
+# the directory this script had just changed into, and produced an empty value.
+REPO_DIR="${DEEPBOT_REPO:-$(cd "$DIR/.." && pwd)}"
 DSH_BIN="${DSH_BIN:-/Applications/DeepSeek Harness.app/Contents/Resources/runtime/cli/bin/dsh}"
 
 case "${1:-}" in
@@ -62,15 +67,18 @@ cp "$DIR/run-gateway.sh" "$RUNTIME_DIR/run-gateway.sh"
 chmod +x "$RUNTIME_DIR/run-gateway.sh"
 echo "✅ runtime copy: $RUNTIME_DIR/run-gateway.sh"
 
-# 1b) read-isolation profile, generated for THIS instance.
-#     It denies reads of every other agent home and of retired bots' data. Its own
-#     home is deliberately absent from the deny list.
-WRITE_READ_PROFILE="$DIR/write-read-profile.sh"
-if [ -x "$WRITE_READ_PROFILE" ]; then
-  "$WRITE_READ_PROFILE" "$RUNTIME_DIR/read-isolation.sb" "$AGENT_HOME" | sed 's/^/   /'
-else
-  echo "   ⚠️ write-read-profile.sh not found — reads will not be confined"
-fi
+# 1b) No read-isolation profile is installed.
+#
+# An earlier version wrapped the gateway in a Seatbelt profile that denied reads of
+# other instances' homes. It did confine reads (the isolation scenario went 4/4)
+# and it broke every bash command: macOS refuses nested sandbox-exec
+# (sandbox_apply: Operation not permitted), so the harness's own sandbox probe
+# found no usable backend, refused to run commands unconfined, and the agent asked
+# to escalate — a request with no answerer, which hung the turn indefinitely.
+# Verified, then reverted.
+#
+# service/write-read-profile.sh is kept as reference for a future sandbox-provider
+# implementation. Do not apply it around the gateway.
 
 # 2) plist
 cat > "$PLIST" <<PLIST_EOF
@@ -88,6 +96,7 @@ cat > "$PLIST" <<PLIST_EOF
     <key>DEEPBOT_HOME</key><string>$AGENT_HOME</string>
     <key>DEEPBOT_PORT</key><string>$PORT</string>
     <key>DSH_BIN</key><string>$DSH_BIN</string>
+  <key>DEEPBOT_REPO</key><string>$REPO_DIR</string>
     <key>PATH</key><string>/usr/bin:/bin:/usr/sbin:/sbin</string>
   </dict>
   <key>RunAtLoad</key><true/>

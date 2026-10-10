@@ -28,6 +28,44 @@ PROFILE="${DEEPBOT_PROFILE:-agent}"
 AGENT_HOME="${DEEPBOT_HOME:-$HOME/.deepbot}"
 PORT="${DEEPBOT_PORT:-19500}"
 
+# ── Build the TypeScript sources ────────────────────────────────────────────
+# The profile loads dist/index.js (package.json "main"), so the compiled entry has
+# to exist and be current. A build failure must never take a working bot down: if
+# dist already exists, start with it and shout; only refuse when there is nothing
+# to load.
+REPO="${DEEPBOT_REPO:-}"
+if [ -n "$REPO" ] && [ -f "$REPO/tsconfig.json" ]; then
+  NODE_BIN="${DEEPBOT_NODE:-}"
+  if [ -z "$NODE_BIN" ]; then
+    for candidate in "$HOME/.dsh/dsh-runtimes/dsh-primary-runtime/dependencies/node/bin/node" "$(command -v node 2>/dev/null)"; do
+      [ -n "$candidate" ] && [ -x "$candidate" ] && { NODE_BIN="$candidate"; break; }
+    done
+  fi
+  TSC="$REPO/node_modules/typescript/lib/tsc.js"
+  ENTRY="$REPO/dist/index.js"
+  STALE=0
+  [ -f "$ENTRY" ] || STALE=1
+  if [ "$STALE" -eq 0 ] && [ -n "$(find "$REPO" -name '*.ts' -newer "$ENTRY" -not -path '*/node_modules/*' -print -quit 2>/dev/null)" ]; then
+    STALE=1
+  fi
+  if [ "$STALE" -eq 1 ]; then
+    if [ -z "$NODE_BIN" ] || [ ! -f "$TSC" ]; then
+      echo "[gateway] dist is missing or stale and the toolchain is unavailable (node=$NODE_BIN tsc=$TSC)" >&2
+      [ -f "$ENTRY" ] || { echo "[gateway] nothing to load; refusing to start. Run: pnpm install && pnpm run build" >&2; exit 1; }
+    else
+      echo "[gateway] building TypeScript (dist missing or older than the sources)"
+      if "$NODE_BIN" "$TSC" -p "$REPO/tsconfig.json" > "$AGENT_HOME/state/build.log" 2>&1; then
+        echo "[gateway] build ok"
+      else
+        echo "[gateway] BUILD FAILED — see $AGENT_HOME/state/build.log" >&2
+        tail -5 "$AGENT_HOME/state/build.log" >&2 || true
+        [ -f "$ENTRY" ] || { echo "[gateway] no dist to fall back to; refusing to start" >&2; exit 1; }
+        echo "[gateway] starting with the existing dist anyway" >&2
+      fi
+    fi
+  fi
+fi
+
 if [ ! -x "$DSH_BIN" ]; then
   echo "[gateway] dsh not found at: $DSH_BIN" >&2
   echo "[gateway] set DSH_BIN to your installation." >&2

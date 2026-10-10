@@ -78,6 +78,24 @@ if [ "$SKIP_PROFILE" -eq 0 ]; then
 fi
 
 echo
+echo "3) build"
+NODE_BIN="${DEEPBOT_NODE:-}"
+if [ -z "$NODE_BIN" ]; then
+  for candidate in "$HOME/.dsh/dsh-runtimes/dsh-primary-runtime/dependencies/node/bin/node" "$(command -v node 2>/dev/null)"; do
+    [ -n "$candidate" ] && [ -x "$candidate" ] && { NODE_BIN="$candidate"; break; }
+  done
+fi
+if [ -f "$REPO_DIR/node_modules/typescript/lib/tsc.js" ] && [ -n "$NODE_BIN" ]; then
+  if run "$NODE_BIN" "$REPO_DIR/node_modules/typescript/lib/tsc.js" -p "$REPO_DIR/tsconfig.json"; then
+    echo "   built   dist/ (the profile loads dist/index.js)"
+  else
+    echo "   FAILED  build failed — the gateway will refuse to start without dist/"
+  fi
+else
+  echo "   note    install dev dependencies and build: pnpm install && pnpm run build"
+fi
+
+echo
 echo "Next"
 echo "  1. credentials (never stored in this repository):"
 echo "       SLACK_BOT_TOKEN / SLACK_APP_TOKEN in $DSH_HOME_DIR/.env   (chmod 600)"

@@ -5,16 +5,18 @@
   "type": "module",
   "license": "MIT",
   "exports": {
-    ".": "./index.js",
+    ".": "./dist/index.js",
     "./package.json": "./package.json"
   },
   "files": [
-    "index.js",
+    "dist",
     "cordis.patch.yml",
     "profile",
     "agent",
     "service",
-    "docs"
+    "docs",
+    "transports",
+    "types"
   ],
   "keywords": [
     "deepseek",
@@ -49,6 +51,15 @@
     "test:immediate": "node test/run-scenario.mjs test/scenarios/recall-immediate.json",
     "test:approval": "node test/run-scenario.mjs test/scenarios/approval.json",
     "persona": "node tools/persona-check.mjs",
-    "init": "./init.sh"
-  }
+    "init": "./init.sh",
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "prepare": "npm run build",
+    "pretest": "npm run build"
+  },
+  "devDependencies": {
+    "@types/node": "^26.6.4",
+    "typescript": "^7.0.2"
+  },
+  "main": "dist/index.js"
 }

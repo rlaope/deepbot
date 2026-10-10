@@ -1,4 +1,11 @@
 #!/bin/bash
+# ⚠️ NOT INSTALLED BY install-service.sh, ON PURPOSE.
+#
+# Wrapping the gateway in this profile confines reads and breaks bash: macOS
+# refuses nested sandbox-exec, so the harness's sandbox probe finds no usable
+# backend and refuses to run commands unconfined. Measured, then reverted; see
+# SPEC.md. Read confinement needs a sandbox *provider* plugin, or one OS user per
+# instance. This script is kept as reference for that work.
 # Generate a macOS Seatbelt profile that denies READS of other instances' data.
 #
 # Why this exists: the harness sandbox fences writes only. Measured, an agent

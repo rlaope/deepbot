@@ -16,7 +16,7 @@
 import { mkdtempSync, readFileSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { apply } from '../index.js'
+import { apply } from '../dist/index.js'
 
 const results = []
 function check(name, ok, detail = '') {

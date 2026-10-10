@@ -106,6 +106,19 @@ npm test                      # reconnect 5/5, delivery 8/8, watches 16/16
 node test/run-scenario.mjs    # boots a real profile; needs a model credential
 ```
 
+The sources are TypeScript. `init.sh` builds them; to do it by hand:
+
+```bash
+pnpm install                    # typescript and @types/node
+pnpm run build                  # tsc -> dist/
+pnpm run typecheck              # no emit
+```
+
+The profile loads `dist/index.js`, so a checkout without `dist/` cannot start. The
+service wrapper rebuilds when `dist/` is missing or older than the sources, and if
+a build fails it starts with the existing `dist/` rather than taking a working bot
+down — refusing only when there is nothing to load.
+
 ```bash
 # 1) create the agent home (persona files) and the gateway profile
 ./init.sh                       # add --dry-run to see what it would do first
