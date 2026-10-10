@@ -247,63 +247,17 @@ Gateway websocket with the message-content intent, native threads, attachments v
 CDN, buttons for approvals.
 **Acceptance:** the same round trip, plus a button action answered.
 
-### M6.5 Interactive approvals — where the dispatch investigation stands
+### M6.5 Interactive approvals ✅ done
 
-The seam dispatches with `scopeTarget(request.agent, request.agent)`. Its filter, read
-from `dsh-scope/lib/index.js`:
-
-> "admit untagged listeners globally, and admits tagged listeners for a matching key or
-> any of its ancestors (`bindScopeParent`) … A tag BELOW the dispatch key stays
-> excluded — events flow up the chain, never down."
-
-Measured, with the gate enabled and the policy `ask`:
-
-| Registered on | Result |
-|---|---|
-| the adapter's own scope (a bundle scope, tagged) | not admitted |
-| `agent.ctx` (a child of the dispatch key) | not admitted — "below the key" |
-| `ctx.root` (expected untagged) | not admitted |
-
-The session records `approval/asked` each time, so the request is raised and audited;
-the answerer is simply never called, and the turn then waits until the timeout.
-
-Next candidates, in the order worth trying:
-
-1. Find what carries the tag on this plugin's context — `ctx.root` may itself be tagged
-   by the profile mount, in which case the root of the *agent registry* is the target.
-2. Register through the service that owns the agent: the composition that mounted
-   `dsh-agent` is the ancestor the doc calls "one standing composition", and
-   `agents.create` may accept or expose a context.
-3. Ask the harness for an answerer registration API instead of a raw event listener —
-   `dsh-acp` and `dsh-api-remotes` both answer approvals, and both are first-party
-   compositions rather than third-party bundles.
-
-A probe that registered on four contexts at once — `agent.ctx`, `ctx.root`, the
-adapter's own context, and the agents service's context — was reached by none of them.
-The scope rules explain all but the first: `dsh-agent-loop` creates the agent scope with
-`createScope(loopCtx, this)` and **no parent**, and `dsh-client-connection` states the
-consequence plainly — events dispatched with `scopeTarget(subject, peer)` reach listeners
-registered through `peer.ctx` "and nobody else".
-
-The session log is the sharper clue: the last event of such a turn is `approval/asked`,
-with **no `approval/decided`**, so the request never settles. Reading the waterfall as the
-cause is tempting but not established — `dsh-api-remotes` registers its forwarding
-listener per *connected client stream*, and a headless gateway has none. The next step is
-to instrument from the harness side rather than guess: run the shipped `headless` profile
-and see whether an approval there fails fast, which would separate "our registration is in
-the wrong place" from "the waterfall does not settle without a client".
-
-Until that is answered, `approvalPatterns: []` keeps the gate off and
-`defaultPreset: unattended` keeps the policy at `never`: a refusal the model can read
-beats a fifteen-minute silence.
-### M6.5 Interactive approvals (mechanism done, dispatch unresolved)
-The policy is `never` today, so nothing hangs — but a user also cannot approve an
-escalation. The approval seam takes an answerer and each transport supplies one
-(Slack block actions, Discord buttons, Telegram callback queries).
-**Acceptance:** an escalation request appears in the chat; approving runs the
-command, denying is reported to the model as a rejection rather than a hang.
-
----
+The answerer posts the request into the conversation and `허용` / `거부` settles it; a
+destructive command inside the workspace asks first. The reason it did not work for three
+rounds is recorded because it fails silently: `dsh-api-remotes` registers an
+`approval/request` listener per connected client stream, and on a headless gateway it
+holds the request — `approval/asked` with no `approval/decided`, the waterfall never
+reaching the adapter's answerer. Disabling that row makes the same request resolve
+immediately. Verified: `approval-gate.json` 4/4 (was 3/4 with a fifteen-minute hang),
+`core.test.mjs` 14 approval checks, and the same scenario passes against the live
+composition.
 
 ## M7 — What is still missing to be a full agent
 

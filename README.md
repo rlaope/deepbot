@@ -246,33 +246,37 @@ counts as addressed (private chat, `@mention`, `text_mention`, a reply to the bo
 mention stripping, posting and replacing, the edit fallback, the two-step file
 lookup, and the history ring.
 
-## Approvals over chat (implemented, disabled by default)
+## Approvals over chat
 
-**The policy on these deployments stays `never`, not `ask`.** With `ask`, a request that
-the answerer never sees does not fail — it waits, and the turn is frozen until the
-timeout. Measured on the approval scenario: with `attended` the scenario hung and was
-cancelled fifteen minutes later; with `unattended` the same command is denied in a second
-with a clear reason. A refusal the model can read beats a silence it cannot.
+The harness raises a one-shot approval for actions that need a human. This adapter
+answers those in the conversation: it posts the request, and `허용` / `거부` in the thread
+settles it. It also gates destructive commands — `rm`, `rmdir`, `sudo`, `dd if=`, `mkfs` —
+because the sandbox allows those *inside* the workspace, where deleting the agent's own
+notes is legitimate, so a human should decide. An unanswered request is cancelled after
+`approvalTimeoutMs` (ten minutes), and a turn is cancelled by its own timeout regardless.
 
-The harness raises a one-shot approval for actions that need a human. This adapter can
-answer those in the conversation: it posts the request, and `허용` / `거부` in the thread
-settles it. It also gates destructive commands — `rm`, `sudo`, `dd if=`, `mkfs` — because
-the sandbox allows those *inside* the workspace, where deleting the agent's own notes is
-legitimate, so a human should decide.
+**One composition change is required, and it was not obvious:**
 
-**It is off by default (`approvalPatterns: []`) because the dispatch does not reach it.**
-`dsh-user-approval` dispatches with
-`ctx.waterfall(scopeTarget(request.agent, request.agent), "approval/request", …)`, and a
-listener registered on the adapter's scope — or on `agent.ctx` — was not reached.
-Measured: the session records `approval/asked`, the gate blocks the command, and the turn
-then waits until the timeout. Shipping that would hang a live bot for fifteen minutes on
-an `rm`, so the gate stays off until the dispatch point is identified. The gate and the
-answerer are unit-verified (`test/core.test.mjs`: request posted, 허용 → allowed-once,
-거부 → rejected, timeout → cancelled, and the fail-closed paths).
+```yaml
+- id: api-remotes
+  disabled: true
+```
 
-A pattern list is also worth calling what it is: a speed bump, not a boundary. Asked to
-remove a file with `rm -rf`, the model used a safer `rm` instead and skipped a gate that
-listed only `rm -rf`.
+`dsh-api-remotes` registers its `approval/request` forwarding listener *per connected
+client stream*. On a headless gateway there is no stream, but the listener is there
+anyway and holds the request: the session records `approval/asked` and never
+`approval/decided`, the waterfall never reaches the adapter's answerer, and the turn
+waits until the timeout. Measured: with it enabled the same scenario hung and was
+cancelled fifteen minutes later; with it disabled the request reaches the answerer
+immediately, the tool is refused, and the turn completes (`approval-gate.json` 4/4).
+
+Disabling it is right for this profile — there is no browser to answer — and the web
+surface stays: the `webserver` row is untouched, so the status endpoint still responds.
+
+The policy pairs with it: `defaultPreset: attended` is `{ sandbox: workspace-write,
+approval: ask }`. With `never` there is nothing to approve; with `ask` and no reachable
+answerer a request would hang, which is why both halves had to be established together.
+
 
 ## Read confinement
 

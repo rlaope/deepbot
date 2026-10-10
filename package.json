@@ -60,7 +60,8 @@
     "test:telegram": "node test/telegram.test.mjs",
     "test:interrupt": "node test/run-scenario.mjs test/scenarios/interrupt.json",
     "test:vision": "node test/run-scenario.mjs test/scenarios/vision.json",
-    "test:discord": "node test/discord.test.mjs"
+    "test:discord": "node test/discord.test.mjs",
+    "test:approval-gate": "node test/run-scenario.mjs test/scenarios/approval-gate.json"
   },
   "devDependencies": {
     "@types/node": "^26.6.4",
