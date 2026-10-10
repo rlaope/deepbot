@@ -1,5 +1,5 @@
 {
-  "_comment": "Can the bot produce real document files? Assertions are on the artifacts: ZIP magic plus an inner OOXML path, which a text file with a .docx name cannot fake.",
+  "_comment": "Can the bot produce real document files? The assertions are on the artifacts and their CONTENT: ZIP magic, the OOXML part names, and the text inside the package once decompressed. A size floor used to stand in for \"python-docx made it\", which is an implementation detail — a run that hand-built a minimal docx produced a real, valid 1 KB document and failed on size alone.",
   "steps": [
     {
       "session": "D",
@@ -12,9 +12,17 @@
     {
       "expectFile": {
         "path": "doc-test.docx",
-        "minBytes": 2000,
+        "minBytes": 500,
         "kind": "zip",
         "contains": "word/document.xml"
+      }
+    },
+    {
+      "expectFile": {
+        "path": "doc-test.docx",
+        "kind": "zip",
+        "zipMember": "word/document.xml",
+        "memberContains": "딥봇 문서 생성 테스트"
       }
     },
     {
@@ -24,9 +32,17 @@
     {
       "expectFile": {
         "path": "deck-test.pptx",
-        "minBytes": 2000,
+        "minBytes": 500,
         "kind": "zip",
         "contains": "ppt/presentation.xml"
+      }
+    },
+    {
+      "expectFile": {
+        "path": "deck-test.pptx",
+        "kind": "zip",
+        "zipMember": "ppt/slides/slide1.xml",
+        "memberContains": "딥봇 문서 생성 테스트"
       }
     },
     {

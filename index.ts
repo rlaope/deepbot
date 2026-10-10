@@ -44,7 +44,7 @@
  * "session event at seq N lacks an identified message" and resume breaks.
  */
 
-import { execFile } from 'node:child_process'
+import { execFile, execFileSync } from 'node:child_process'
 import { createHash, randomUUID } from 'node:crypto'
 import { appendFileSync, existsSync, mkdirSync, readFileSync, readdirSync, realpathSync, statSync, writeFileSync } from 'node:fs'
 import { dirname, join, resolve, sep } from 'node:path'
@@ -1439,6 +1439,21 @@ export function apply(ctx, config) {
           if (spec.minBytes !== undefined) checks.push({ what: `≥${spec.minBytes} bytes (saw ${stat.size})`, ok: stat.size >= spec.minBytes })
           if (spec.kind === 'zip') checks.push({ what: 'is a ZIP package', ok: bytes[0] === 0x50 && bytes[1] === 0x4b })
           if (spec.contains !== undefined) checks.push({ what: `contains ${JSON.stringify(spec.contains)}`, ok: bytes.includes(Buffer.from(spec.contains)) })
+          // Inside an OOXML package the document text is DEFLATE-compressed, so a raw
+          // substring search cannot see it. Decompress the member and look there: this
+          // asserts what the document SAYS rather than how big it is. The size assertion
+          // this replaces encoded "python-docx made it", which is an implementation
+          // detail — a hand-built minimal docx is a real document and failed it.
+          if (spec.zipMember !== undefined) {
+            let member = ''
+            try {
+              member = execFileSync('/usr/bin/unzip', ['-p', abs, spec.zipMember], { encoding: 'utf8', maxBuffer: 8 * 1024 * 1024 })
+            } catch (e) { member = `(unzip failed: ${String(e?.message ?? e)})` }
+            if (spec.memberContains !== undefined) {
+              checks.push({ what: `${spec.zipMember} contains ${JSON.stringify(spec.memberContains)}`, ok: member.includes(spec.memberContains) })
+            }
+            if (spec.memberNotEmpty === true) checks.push({ what: `${spec.zipMember} is not empty`, ok: member.trim().length > 0 })
+          }
           if (spec.notContains !== undefined) checks.push({ what: `does not contain ${JSON.stringify(spec.notContains)}`, ok: !bytes.includes(Buffer.from(spec.notContains)) })
           const bad = checks.filter((c) => !c.ok)
           if (bad.length > 0) failed++
