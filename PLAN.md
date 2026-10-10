@@ -201,10 +201,91 @@ Verified by `test/scenarios/document.json` 5/5, asserting on the artifacts: ZIP
 magic plus an inner OOXML path. A model describing a document it never wrote reads
 exactly like one that did.
 
-## M6 — Beyond Slack
+## M6 — Beyond Slack: one core, several transports
 
-Only if a second platform is actually wanted. Discord and Telegram are new
-adapters of the same shape, not a refactor — the adapter is already isolated.
+The earlier version of this section said a second platform would be "a new adapter
+of the same shape, not a refactor, because the adapter is already isolated". That
+was wrong. The adapter is ~700 lines of Slack inside `index.js`: thread→session
+mapping, delta history, attachment download, progress replacement and mention
+matching are all written against Slack's payloads. A second platform today means a
+second copy of that logic.
+
+**Transport interface** — what a platform supplies, and nothing more:
+
+| Method | Purpose |
+|---|---|
+| `connect({onMessage, onAction, onStatus})` | inbound events; `onStatus` reports connection health |
+| `post(target, text, {replace})` | send, or replace a message already sent (progress → answer) |
+| `fetchHistory(target, sinceTs)` | messages after a point, for a delta |
+| `fetchAttachments(message, stamp)` | download into the agent home, return a manifest |
+| `identity()` | bot name and team, for the startup line and mention matching |
+
+The core keeps what is already proven: thread→session mapping, the turn loop, the
+recall refresh, digest-gated standing context, watches, reminders, health.
+
+### M6.1 Extract the seam with no behaviour change
+Slack becomes `transports/slack.mjs`.
+**Acceptance:** every existing test and scenario passes unchanged, and the live
+gateway restarts with the same log lines.
+
+### M6.2 A fake transport, so the core is testable without a platform
+`test/fake-transport.mjs` drives the core in-process.
+**Acceptance:** tests cover mapping, delta history, progress replacement, attachment
+manifests and failure paths with no network and no account. This is the real reason
+to do the extraction; the second platform is the excuse.
+
+### M6.3 Telegram
+Long polling — no websocket, no app-token dance. The cheapest second transport, and
+the one that proves the interface. Telegram has no threads, so a reply chain or a
+per-chat session key stands in.
+**Acceptance:** a live round trip — message, answer, attachment, and a reminder
+delivered back into the same chat.
+
+### M6.4 Discord
+Gateway websocket with the message-content intent, native threads, attachments via
+CDN, buttons for approvals.
+**Acceptance:** the same round trip, plus a button action answered.
+
+### M6.5 Interactive approvals
+The policy is `never` today, so nothing hangs — but a user also cannot approve an
+escalation. The approval seam takes an answerer and each transport supplies one
+(Slack block actions, Discord buttons, Telegram callback queries).
+**Acceptance:** an escalation request appears in the chat; approving runs the
+command, denying is reported to the model as a rejection rather than a hang.
+
+---
+
+## M7 — What is still missing to be a full agent
+
+Ordered by what blocks real use. Each row is a milestone, not a wish.
+
+| # | Gap | Why it matters | Approach | Acceptance |
+|---|---|---|---|---|
+| 1 | **Read isolation** | Two instances under one OS user can read each other's data; a B2B blocker | A sandbox *provider* plugin (its own profile and enforcement), or one OS user per instance | The isolation scenario passes and bash still works. Do not repeat the Seatbelt wrap: macOS refuses nested `sandbox-exec` |
+| 2 | **Vision** | Users send screenshots; the file arrives and the model cannot see it | Verify the model route accepts image parts, then send images as image content instead of a path | A screenshot question is answered from the image, not the filename |
+| 3 | **Interrupt** | A long turn cannot be stopped | `agent.cancel()` wired to a chat command and to the approval seam | A turn stops mid-flight and the chat says so |
+| 4 | **Real progress** | One static placeholder; the user cannot tell what is happening | Stream step boundaries and tool names into the placeholder, throttled | A long turn shows what it is doing, updated in place |
+| 5 | **Browser / computer use** | Many asks are "open this and check"; Hermes has it, DSH ships nothing | A tool plugin over a local headless browser (CDP), sandboxed to the agent home | A page is opened, read, and quoted with a source link |
+| 6 | **Cost per user** | Spend is invisible; the projection exists and is unused | Read `tokenUsage` per session, aggregate per channel and user, add a report command | `@bot usage` answers with tokens, cache ratio, and turns |
+| 7 | **Semantic memory** | Keyword grep misses paraphrases | An embedding index over `memory/` and the recall log, grep as fallback | A paraphrased question finds the original fact |
+| 8 | **Note hygiene** | Notes duplicate until the budget silently truncates them | Dedupe and expiry pass, plus the existing budget check | The persona check stays clean across a week of use |
+| 9 | **Multi-tenant memory** | One instance = one memory; B2B needs per-org separation | Session and memory scoping per channel or workspace entity | Two channels cannot see each other's notes |
+| 10 | **Ops** | Log rotation, backup/restore, crash-loop detection, a Linux/systemd install | Service-layer additions | A restore reproduces a home; the installer works on Linux |
+| 11 | **Prompt-injection defence** | Fetched material is framed as content and nothing enforces it | Keep the framing, flag instruction-like content in fetched material | A channel message saying "ignore your instructions" does not change behaviour |
+| 12 | **Releases** | No version, no changelog, no artifact | Semver, CHANGELOG, a tag per milestone | A tagged release installs from a clean clone |
+
+### Non-goals
+
+Video and audio, per-user billing, a web UI of our own, enterprise workspace
+governance. Not planned.
+
+### An unverified reference point
+
+"OpenClaw-level" is not something this repository can check. The comparison behind
+this table uses what was measured on this machine — the Hermes profile's plugin
+inventory (browser, computer_use, image and video generation, google_meet, kanban,
+observability, memory, cron, delegation) — plus the gaps hit while building this. If
+OpenClaw has specific must-haves, name them and the table gets corrected.
 
 ---
 
