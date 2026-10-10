@@ -46,8 +46,9 @@
 
 import { execFile } from 'node:child_process'
 import { createHash, randomUUID } from 'node:crypto'
-import { appendFileSync, existsSync, mkdirSync, readFileSync, readdirSync, statSync, writeFileSync } from 'node:fs'
-import { dirname, join, sep } from 'node:path'
+import { appendFileSync, existsSync, mkdirSync, readFileSync, readdirSync, realpathSync, statSync, writeFileSync } from 'node:fs'
+import { dirname, join, resolve, sep } from 'node:path'
+import { tmpdir } from 'node:os'
 import { fileURLToPath } from 'node:url'
 import { createSlackTransport } from './transports/slack.js'
 import { createTelegramTransport } from './transports/telegram.js'
@@ -133,6 +134,13 @@ const DEFAULTS = {
   // workspace asks, because deletion there is irreversible and the sandbox allows it.
   approvalPatterns: ['rm ', 'rmdir ', 'sudo ', 'dd if=', 'mkfs', 'shutdown', 'reboot', 'kill -9'],
   approvalTools: ['bash', 'pwsh'],
+  // Read scope for the file tools. Commands are confined by the sandbox runner; the
+  // tools are not, because `dsh-fs-sandbox` fences mutation and documents that it does
+  // not restrict observation. This closes that half at the tool boundary.
+  readScope: true,
+  readScopeTools: ['read', 'read_image', 'grep', 'glob'],
+  readScopeRoots: [],          // default: the agent home plus temp, see readRoots()
+  readScopeAllowTemp: true,
   approvalTimeoutMs: 600000,
   approveWords: ['허용', '승인', '응', 'ㅇㅇ', 'yes', 'allow', 'ok', 'ㅇ'],
   denyWords: ['거부', '아니', '안돼', 'no', 'deny', 'ㄴㄴ'],
@@ -731,39 +739,135 @@ export function apply(ctx, config) {
   }
 
   /**
-   * Ask before destructive commands.
+   * Where the file tools may read, and what they may destroy.
    *
-   * `tools/pre-execute` is the harness's allow/deny/ask gate and a listener returns
-   * `{ kind }`; `ask` runs the approval seam, which the answerer above resolves. The
-   * gate only asks when a human is reachable — with no mapped conversation it defers
-   * to the harness and its sandbox rather than pretending to ask.
+   * Two concerns, one listener, because `tools/pre-execute` is a single ordered gate and
+   * a listener that returns `{ kind: 'deny' }` ends the call.
+   *
+   * The read scope exists because the sandbox fences writes only: `dsh-fs-sandbox`
+   * documents that the mutation fence "does not restrict observation", so `read` reaches
+   * anywhere the user can — another instance's home, a retired bot's token file. Commands
+   * are confined by the sandbox runner; this confines the tools. It is a policy
+   * boundary, not a kernel one: a tool that is not named here is not covered, and the
+   * list has to grow with the composition.
    */
-  let approvalGate = null
-  function startApprovalGate() {
-    if (approvalGate !== null || typeof ctx.on !== 'function') return
-    const patterns = Array.isArray(cfg.approvalPatterns) ? cfg.approvalPatterns.filter((p: unknown) => typeof p === 'string' && p !== '') : []
-    if (patterns.length === 0) return
-    approvalGate = ctx.on('tools/pre-execute', (exec, next) => {
+  const resolvedCwd = { value: null as string | null }
+
+  /** Absolute roots a file tool may read under. */
+  async function readRoots(): Promise<string[]> {
+    if (Array.isArray(cfg.readScopeRoots) && cfg.readScopeRoots.length > 0) return cfg.readScopeRoots
+    if (resolvedCwd.value === null) resolvedCwd.value = await sessionCwd()
+    const roots = [resolvedCwd.value]
+    if (cfg.readScopeAllowTemp === true) roots.push(tmpdir(), '/tmp', '/private/tmp', '/var/folders')
+    // Read-only tooling the agent legitimately opens: the bundled runtimes it is told to
+    // use for documents, and the harness's own shipped resources. Neither holds this
+    // deployment's data — sessions, credentials and other instances' homes stay out.
+    for (const extra of [
+      join(process.env.DSH_HOME ?? join(process.env.HOME ?? '', '.dsh'), 'dsh-runtimes'),
+      '/Applications/DeepSeek Harness.app/Contents/Resources',
+    ]) {
+      if (existsSync(extra)) roots.push(extra)
+    }
+    return roots
+  }
+
+  /**
+   * Is this path under one of the roots?
+   *
+   * A path that exists is compared by its real path, so a symlink pointing out of the
+   * workspace does not count as inside it. A path that does not exist yet — a read of a
+   * missing file, or a temp path before it is written — is compared lexically as well,
+   * because on macOS `/tmp` is a symlink to `/private/tmp` and the two spellings must
+   * match. Comparing a nonexistent path both ways costs nothing: it cannot be a symlink.
+   */
+  /** The same roots as readRoots(), without awaiting: the gate has to decide synchronously. */
+  function readRootsSync(): string[] {
+    if (Array.isArray(cfg.readScopeRoots) && cfg.readScopeRoots.length > 0) return cfg.readScopeRoots
+    if (resolvedCwd.value === null) return []
+    const roots = [resolvedCwd.value]
+    if (cfg.readScopeAllowTemp === true) roots.push(tmpdir(), '/tmp', '/private/tmp', '/var/folders')
+    for (const extra of [
+      join(process.env.DSH_HOME ?? join(process.env.HOME ?? '', '.dsh'), 'dsh-runtimes'),
+      '/Applications/DeepSeek Harness.app/Contents/Resources',
+    ]) {
+      if (existsSync(extra)) roots.push(extra)
+    }
+    return roots
+  }
+
+  function isInside(path: string, roots: string[]): boolean {
+    let real: string
+    let exists = true
+    try { real = realpathSync(path) } catch { exists = false; real = resolve(path) }
+    const lexical = resolve(path)
+    const under = (candidate: string, base: string) =>
+      candidate === base || candidate.startsWith(base.endsWith(sep) ? base : base + sep)
+    const canonicalRoots = roots.map((root) => { try { return realpathSync(root) } catch { return resolve(root) } })
+    if (exists) return canonicalRoots.some((base) => under(real, base))
+    return canonicalRoots.some((base) => under(real, base) || under(lexical, base))
+      || roots.map((root) => resolve(root)).some((base) => under(lexical, base))
+  }
+
+  let toolPolicy = null
+  function startToolPolicy() {
+    if (toolPolicy !== null || typeof ctx.on !== 'function') return
+    toolPolicy = ctx.on('tools/pre-execute', (exec, next) => {
       try {
-        const name = exec?.name ?? exec?.toolName
-        if (!Array.isArray(cfg.approvalTools) || !cfg.approvalTools.includes(name)) return next()
-        const command = String(exec?.arguments?.command ?? '')
-        if (command === '') return next()
-        const pattern = patterns.find((p: string) => command.includes(p))
-        if (pattern === undefined) return next()
-        const sessionId = exec?.agent?.session?.header?.id ?? exec?.agent?.session?.id
-        const key = Object.keys(state.sessions).find((k) => state.sessions[k] === sessionId)
-        if (key === undefined) {
-          log(`destructive command "${pattern}" with no conversation to ask in — leaving it to the sandbox`)
-          return next()
-        }
-        log(`asking for approval: "${pattern}" in ${key}`)
-        return { kind: 'ask', reason: `destructive command matching "${pattern}": ${command.slice(0, 160)}` }
+        const denied = readScopeDecision(exec)
+        if (denied !== null) return denied
+        const ask = destructiveDecision(exec)
+        if (ask !== null) return ask
+        return next()
       } catch (e) {
-        log(`approval gate failed: ${String((e as Error)?.message ?? e)} — deferring`)
+        log(`tool policy failed: ${String((e as Error)?.message ?? e)} — deferring`)
         return next()
       }
     })
+  }
+
+  /** Deny a file-tool read outside the roots, or null to let the call proceed. */
+  function readScopeDecision(exec): { kind: string; reason: string } | null {
+    if (cfg.readScope !== true) return null
+    const name = exec?.name ?? exec?.toolName
+    if (!Array.isArray(cfg.readScopeTools) || !cfg.readScopeTools.includes(name)) return null
+    const args = exec?.arguments ?? {}
+    const candidates: string[] = [args.file_path, args.path, args.dir]
+      .filter((value: unknown): value is string => typeof value === 'string' && value !== '')
+    // glob and grep default to the workspace; an absolute pattern is the way out of it.
+    if (typeof args.pattern === 'string' && args.pattern.startsWith('/')) candidates.push(args.pattern)
+    if (candidates.length === 0) return null
+    const roots = resolvedCwd.value === null ? [] as string[] : readRootsSync()
+    if (roots.length === 0) return null
+    for (const candidate of candidates) {
+      if (!isInside(candidate, roots)) {
+        log(`read outside the sandbox denied: ${name} ${candidate}`)
+        return {
+          kind: 'deny',
+          reason: `reading outside the workspace (${roots[0]}) is not allowed. Ask the user to put the file there, or to paste its contents.`,
+        }
+      }
+    }
+    return null
+  }
+
+  /** Ask a human before a destructive command, or null to defer. */
+  function destructiveDecision(exec): { kind: string; reason: string } | null {
+    const patterns = Array.isArray(cfg.approvalPatterns) ? cfg.approvalPatterns.filter((p: unknown) => typeof p === 'string' && p !== '') : []
+    if (patterns.length === 0) return null
+    const name = exec?.name ?? exec?.toolName
+    if (!Array.isArray(cfg.approvalTools) || !cfg.approvalTools.includes(name)) return null
+    const command = String(exec?.arguments?.command ?? '')
+    if (command === '') return null
+    const pattern = patterns.find((p: string) => command.includes(p))
+    if (pattern === undefined) return null
+    const sessionId = exec?.agent?.session?.header?.id ?? exec?.agent?.session?.id
+    const key = Object.keys(state.sessions).find((k) => state.sessions[k] === sessionId)
+    if (key === undefined) {
+      log(`destructive command "${pattern}" with no conversation to ask in — leaving it to the sandbox`)
+      return null
+    }
+    log(`asking for approval: "${pattern}" in ${key}`)
+    return { kind: 'ask', reason: `destructive command matching "${pattern}": ${command.slice(0, 160)}` }
   }
 
   // ── Drive one turn ────────────────────────────────────────────────────────
@@ -1511,6 +1615,9 @@ export function apply(ctx, config) {
     log(`session cwd=${cwd}  state=${stateDir}  mapped sessions=${Object.keys(state.sessions).length}`)
     if (cfg.injectInstructions) {
       const probe = await contextPreamble()
+      resolvedCwd.value = cwd
+      const roots = await readRoots()
+      log(`read scope: ${cfg.readScope === true ? `enforcing under ${roots.join(', ')}` : 'disabled'} (tools: ${(cfg.readScopeTools ?? []).join(', ')})`)
       log(`memory: auto-index=${cfg.autoIndex} indexer=${recallScriptPath()}`)
       log(`session composition: preset=${cfg.agentPreset} permission=${cfg.permissionPreset} workspace=${cfg.attachWorkspace ? 'attach' : 'none'}`)
         const present = [cfg.personaFile, 'AGENTS.md', cfg.userFile, cfg.factsFile]
@@ -1552,10 +1659,14 @@ export function apply(ctx, config) {
   }
 
   ctx.effect(() => {
+    // Resolve the session directory here, not inside start(): the scenario path returns
+    // from start() early, and a read scope with no roots enforced nothing at all — the
+    // isolation scenario read a canary outside the workspace and passed the value back.
+    void sessionCwd().then((cwd) => { resolvedCwd.value = cwd }).catch(() => { /* no cwd, no scope */ })
     startWithRetry()
     startDeliveryWatcher()
     startApprovalAnswerer()
-    startApprovalGate()
+    startToolPolicy()
     writeHealth()
     if (healthTimer === null) healthTimer = setInterval(writeHealth, cfg.heartbeatMs)
     return () => {

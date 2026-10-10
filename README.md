@@ -301,11 +301,23 @@ Wrapping the *gateway* in such a profile does not work and is not what this does
 macOS refuses nested `sandbox-exec`, so the harness's sandbox probe finds no backend
 and refuses to run commands at all. Replacing the runner avoids the nesting entirely.
 
-**What this does not cover:** the `fs` tool's `read`. Its fence restricts mutation and
-documents that it does not restrict observation, so a read tool can still reach outside
-the workspace. Closing that needs a `ctx.fs` provider, which needs the `FileSystem`
-base class from `dsh-fs` — and this plugin resolves modules from its own directory,
-where harness packages do not exist.
+The file tools are fenced separately, at the harness's tool gate:
+
+```yaml
+- id: deepbot
+  config:
+    readScope: true                                        # default
+    readScopeTools: [read, read_image, grep, glob]
+    readScopeRoots: []                                     # default: workspace + temp + tooling
+```
+
+A read outside those roots is denied with a reason the model can act on ("ask the user to
+put the file there, or to paste its contents"). It exists because `dsh-fs-sandbox` fences
+mutation and documents that it does not restrict observation.
+
+This is a **policy** boundary: the tool list has to grow with the composition, and a tool
+that reads files another way would not be covered. Symlinks are resolved when the path
+exists, so a link inside the workspace pointing outside it does not count as inside.
 
 ## Images
 

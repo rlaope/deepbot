@@ -129,22 +129,22 @@ Requirements that came directly from a real outage:
 - **One owner per FTS index path.**
 - **macOS TCC:** `launchd` cannot read `~/Documents`.
 - **Sandbox:** agent writes are confined to its home (`workspace-write`), fail-closed.
-- **Reads are confined for commands, and open for the fs tool.** An agent's `bash`
-  runs under a sandbox runner that denies reads of every other agent home and of
-  retired bots' data (`service/confined-runner.sh`) while keeping the harness's write
-  rules exactly. Measured: `cat ~/.hermes/<canary>` fails with `Operation not
-  permitted`, a canary in another agent's home fails, and the write path (documents)
-  is unaffected.
-  The remaining hole is the **`fs` tool's read**: `dsh-fs-sandbox` documents that the
-  mutation fence "does not restrict observation", so `read` still reaches outside the
-  workspace. Closing it needs a `ctx.fs` provider, which needs the `FileSystem` base
-  class from `dsh-fs` — and this plugin resolves modules from its own directory, where
-  harness packages do not exist. That is the same constraint that shaped how images
-  are admitted (through the service, not the helper).
-  What is *not* an option: wrapping the whole gateway in a read-denying profile. macOS
-  refuses nested `sandbox-exec` (`sandbox_apply: Operation not permitted`), so the
-  harness's sandbox probe finds no backend, refuses to run commands at all, and the
-  agent asks to escalate into a request with no answerer. Verified, then reverted.
+- **Reads are confined on both surfaces, by two different mechanisms.** Commands run
+  under `service/confined-runner.sh`, which denies reads of other instances' homes and of
+  retired bots' data while honouring the harness's write rules. The file tools are fenced
+  at `tools/pre-execute` by a read scope (`readScope`, covering `read`, `read_image`,
+  `grep`, `glob`), because `dsh-fs-sandbox` fences mutation and documents that it does not
+  restrict observation. Measured: `isolation.json` 4/4 — the fs tool refuses a canary
+  outside the workspace, `cat` refuses it, `~/.hermes` refuses it, and reads inside the
+  workspace still work.
+  The scope is a **policy** boundary, not a kernel one: it is a list of tools that must
+  grow with the composition, symlinks are resolved when the path exists, and the readable
+  roots are the workspace, temp, and read-only tooling (`dsh-runtimes`, the shipped
+  resources). Sessions, credentials and other instances' homes stay out.
+  Two things that are *not* the fix, each verified: wrapping the whole gateway in a
+  read-denying profile (macOS refuses nested `sandbox-exec`, so the harness then refuses
+  to run commands at all), and expecting the fs backend to do it (its README says it will
+  not).
 
 ## 9. Success criteria
 

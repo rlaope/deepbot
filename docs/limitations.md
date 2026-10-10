@@ -36,14 +36,11 @@ decision with a cost.
   the Socket Mode protocol; no live network interruption was induced.
 - **Attachment/thread edge cases.** Only plain threaded text has been exercised.
 
-- **Reads are confined for commands and open for the fs tool.** `bash` runs under a
-  runner that denies reads of other instances' homes and retired bot data, with the
-  harness's write rules preserved; documents and the whole agent path still work
-  (verified). The `fs` tool's `read` is still unconfined: its fence restricts mutation
-  and explicitly not observation. Closing that needs a `ctx.fs` provider, which needs
-  a base class this plugin cannot import. Wrapping the gateway instead is not an
-  option — nested `sandbox-exec` is refused by macOS and the harness then refuses to
-  run commands at all.
+- **Reads are confined by policy, on two surfaces.** Commands through the sandbox runner,
+  file tools through a `tools/pre-execute` read scope. It is a policy boundary rather than
+  a kernel one: the tool list has to grow with the composition, and a new tool that reads
+  files another way would not be covered. A separate OS user per instance remains the
+  stronger answer, and is not built.
 
 
 ## Design risks

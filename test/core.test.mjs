@@ -280,6 +280,26 @@ function boot({ state = {}, config = {} } = {}) {
   t.done()
 }
 
+// 17. The file tools cannot read outside the workspace, and writes are unaffected.
+{
+  const t = boot({ state: { sessions: { 'C_ALLOWED:t1': 'slack-abc' } } })
+  await sleep(80)
+  const exec = (name, args, sessionId = 'slack-abc') => ({ name, arguments: args, agent: { session: { header: { id: sessionId } } } })
+  const home = process.cwd()
+  check('a read inside the workspace is allowed', t.gate(exec('read', { file_path: join(home, 'README.md') })) === 'delegated')
+  check('a relative read is resolved against the workspace', t.gate(exec('read', { file_path: 'index.ts' })) === 'delegated')
+  const denied = t.gate(exec('read', { file_path: `${process.env.HOME}/.hermes/profiles/miku/.env` }))
+  check('a read outside is denied', denied?.kind === 'deny', JSON.stringify(denied))
+  check('and the denial says what to do instead', /put the file there|paste its contents/.test(String(denied?.reason)), String(denied?.reason).slice(0, 90))
+  check('the denial is logged', t.logs.some((l) => /read outside the sandbox denied/.test(l)))
+  check('a read in temp is allowed', t.gate(exec('read', { file_path: '/tmp/some-file.txt' })) === 'delegated')
+  check('grep with an outside path is denied', t.gate(exec('grep', { pattern: 'token', path: '/etc' }))?.kind === 'deny')
+  check('glob with an absolute outside pattern is denied', t.gate(exec('glob', { pattern: '/etc/**' }))?.kind === 'deny')
+  check('writes are not affected by the read scope', t.gate(exec('write', { file_path: `${process.env.HOME}/outside.txt`, content: 'x' })) === 'delegated')
+  check('an unnamed tool is not covered', t.gate(exec('todo_write', { file_path: '/etc/hosts' })) === 'delegated')
+  t.done()
+}
+
 const failed = results.filter((r) => !r.ok)
 console.log(`\n${results.length - failed.length}/${results.length} checks passed`)
 process.exit(failed.length === 0 ? 0 : 1)
