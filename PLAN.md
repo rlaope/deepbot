@@ -278,7 +278,22 @@ Next candidates, in the order worth trying:
    `dsh-acp` and `dsh-api-remotes` both answer approvals, and both are first-party
    compositions rather than third-party bundles.
 
-Until one of those works, `approvalPatterns: []` keeps the gate off and
+A probe that registered on four contexts at once — `agent.ctx`, `ctx.root`, the
+adapter's own context, and the agents service's context — was reached by none of them.
+The scope rules explain all but the first: `dsh-agent-loop` creates the agent scope with
+`createScope(loopCtx, this)` and **no parent**, and `dsh-client-connection` states the
+consequence plainly — events dispatched with `scopeTarget(subject, peer)` reach listeners
+registered through `peer.ctx` "and nobody else".
+
+The session log is the sharper clue: the last event of such a turn is `approval/asked`,
+with **no `approval/decided`**, so the request never settles. Reading the waterfall as the
+cause is tempting but not established — `dsh-api-remotes` registers its forwarding
+listener per *connected client stream*, and a headless gateway has none. The next step is
+to instrument from the harness side rather than guess: run the shipped `headless` profile
+and see whether an approval there fails fast, which would separate "our registration is in
+the wrong place" from "the waterfall does not settle without a client".
+
+Until that is answered, `approvalPatterns: []` keeps the gate off and
 `defaultPreset: unattended` keeps the policy at `never`: a refusal the model can read
 beats a fifteen-minute silence.
 ### M6.5 Interactive approvals (mechanism done, dispatch unresolved)
