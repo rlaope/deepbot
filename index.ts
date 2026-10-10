@@ -51,6 +51,7 @@ import { dirname, join, sep } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { createSlackTransport } from './transports/slack.js'
 import { createTelegramTransport } from './transports/telegram.js'
+import { createProgressTracker } from './progress.js'
 import type { SlackHistoryResponse } from './types/slack.js'
 import type { InboundMessage } from './types/transport.js'
 import type { Origin, TurnOutcome, TurnSummary } from './types/core.js'
@@ -113,6 +114,9 @@ const DEFAULTS = {
   // way to interrupt it, which for a chat agent is the difference between a
   // colleague and a runaway process.
   cancelWords: ['그만', '중단', '취소', '멈춰', 'stop', 'cancel'],
+  // A progress edit is a message edit against a rate-limited API, so the message
+  // says roughly what is happening, not every step of it.
+  progressUpdateMs: 2500,
   progressAfterMs: 8000,
   progressText: ':hourglass_flowing_sand: 작업 중입니다…',
   downloadAttachments: true,
@@ -474,6 +478,25 @@ export function apply(ctx, config) {
    */
   const activeTurns = new Set()
 
+  // The in-place progress message. One per conversation, replaced by the answer.
+  const progress = createProgressTracker({
+    post: (target, text, opts) => transport.post(target, text, opts),
+    throttleMs: cfg.progressUpdateMs,
+    label: cfg.progressText,
+    log,
+  })
+
+  /** When each conversation's current turn started, for the progress threshold. */
+  const turnStartedAt = new Map<string, number>()
+
+  /** "C1" or "C1:thread" back into a target. */
+  function targetFromKey(key: string) {
+    const separator = key.indexOf(':')
+    return separator === -1
+      ? { channel: key, threadTs: null }
+      : { channel: key.slice(0, separator), threadTs: key.slice(separator + 1) }
+  }
+
   /**
    * Turns that are running right now, so one can be stopped.
    *
@@ -501,13 +524,37 @@ export function apply(ctx, config) {
   }
   let deliveryWatcher = null
 
+  /**
+   * One listener for both things the adapter watches in a session.
+   *
+   * It used to be two — delivery and progress — and two listeners for the same
+   * event is both more dispatch and one more thing to keep in sync. The event type
+   * decides which half runs.
+   */
   function startDeliveryWatcher() {
     if (deliveryWatcher !== null || typeof ctx.on !== 'function') return
     deliveryWatcher = ctx.on('session/event', (session, event) => {
       try {
+        const liveSessionId = session?.header?.id ?? session?.id
+        if (typeof liveSessionId !== 'string') return
+
+        // Progress: the turn is slow, and it is doing something. The message is
+        // created once the turn has been slow for progressAfterMs, then edited as
+        // tools run, so a quick turn never shows anything.
+        if (event?.type === 'tool/call' && activeTurns.has(liveSessionId)) {
+          const liveKey = Object.keys(state.sessions).find((k) => state.sessions[k] === liveSessionId)
+          if (liveKey !== undefined) {
+            const startedAt = turnStartedAt.get(liveKey)
+            if (startedAt !== undefined && (progress.has(liveKey) || Date.now() - startedAt >= cfg.progressAfterMs)) {
+              const name = event.data?.name ?? event.data?.toolName ?? event.data?.call?.name
+              void progress.note(liveKey, targetFromKey(liveKey), typeof name === 'string' ? name : undefined)
+                .catch((e) => log('progress update failed', String((e as Error)?.message ?? e)))
+            }
+          }
+        }
         if (event?.type !== 'assistant/message') return
-        const sessionId = session?.header?.id ?? session?.id
-        if (typeof sessionId !== 'string' || activeTurns.has(sessionId)) return
+        const sessionId = liveSessionId
+        if (activeTurns.has(sessionId)) return
         const key = Object.keys(state.sessions).find((k) => state.sessions[k] === sessionId)
         if (key === undefined) return
         const text = (event.data?.message?.content ?? [])
@@ -668,6 +715,22 @@ export function apply(ctx, config) {
     runningTurns.set(turnKey, turnState)
     const turnTimeout = setTimeout(() => { cancelRunning(turnKey, 'timed out') }, cfg.runTimeoutMs)
 
+    // Progress lives here, not in the Slack message handler, for the same reason the
+    // recall refresh does: this is the one place every caller passes through. Armed
+    // from the message path only, the progress path could not be exercised by the
+    // test harness at all.
+    const progressTarget = origin ?? targetFromKey(turnKey)
+    turnStartedAt.set(turnKey, Date.now())
+    const progressTimer = cfg.progressAfterMs > 0 && turnKey !== ''
+      ? setTimeout(() => {
+          void progress.force(turnKey, progressTarget)
+            .then(() => log(progress.has(turnKey)
+              ? `progress message posted after ${cfg.progressAfterMs}ms`
+              : `progress message not posted (the transport returned no message id)`))
+            .catch((e) => log(`progress message failed: ${String((e as Error)?.message ?? e)}`))
+        }, cfg.progressAfterMs)
+      : null
+
     try {
       await agent.whenIdle()
       const firstSeq = agent.session.seq
@@ -705,6 +768,15 @@ export function apply(ctx, config) {
       const reason = outcome.reason ?? (turnState.cause !== null ? { kind: 'cancelled', cause: turnState.cause } : null)
       return { text: outcome.text, reason, toolsUsed: outcome.toolsUsed, sessionId }
     } finally {
+      // The timers belong to this turn and must not outlive it: a stale turn
+      // timeout firing during a later turn in the same conversation would cancel
+      // work nobody asked to stop.
+      clearTimeout(turnTimeout)
+      if (progressTimer !== null) clearTimeout(progressTimer)
+      turnStartedAt.delete(turnKey)
+      // Same reason: a leftover entry would let a stop request report that it stopped
+      // a turn that finished long ago.
+      runningTurns.delete(turnKey)
       // Release the agent after every turn. The log is persisted, so the next
       // turn can resume; keeping it alive would pile one agent per thread into
       // memory.
@@ -840,15 +912,7 @@ export function apply(ctx, config) {
         try { attachmentText = (await transport.fetchAttachments(message, String(ts).replace('.', '-'))).text }
         catch (e) { log(`attachment fetch threw: ${String(e?.message ?? e)}`) }
         if (attachmentText !== '') log(`attachments: ${message.files.length} file(s) for ts=${ts}`)
-        let placeholderTs: string | null = null
-        const progressTimer = cfg.progressAfterMs > 0
-          ? setTimeout(async () => {
-              try {
-                const posted = await transport.post(replyTarget, cfg.progressText)
-                if (posted !== null) { placeholderTs = posted.ts; log(`progress placeholder posted after ${cfg.progressAfterMs}ms`) }
-              } catch { /* progress is best effort */ }
-            }, cfg.progressAfterMs)
-          : null
+
         let r
         try {
           r = await withTimeout(runTurn(prompt, state.sessions[key], { channel, threadTs }, historyText, attachmentText, key), cfg.runTimeoutMs)
@@ -859,9 +923,12 @@ export function apply(ctx, config) {
             saveState()
           }
         } finally {
-          if (progressTimer !== null) clearTimeout(progressTimer)
+          /* no timers here: the turn owns them, and a timeout or a stop cancels it */
         }
         if (r.sessionId && r.sessionId !== state.sessions[key]) { state.sessions[key] = r.sessionId; saveState() }
+        // The answer takes the progress message's place, so a slow turn leaves one
+        // message that changed rather than a stale "working on it" plus an answer.
+        const placeholderTs = progress.take(key)?.ts ?? null
         const ok = r.reason?.kind === 'completed'
         if (ok && r.text) {
           health.answered++
@@ -878,7 +945,8 @@ export function apply(ctx, config) {
         }
       } catch (e) {
         log('turn failed', String(e?.stack ?? e))
-        await transport.post(replyTarget, `Execution failed: ${String(e?.message ?? e).slice(0, 300)}`)
+        const leftover = progress.take(key)?.ts ?? null
+        await transport.post(replyTarget, `Execution failed: ${String(e?.message ?? e).slice(0, 300)}`, { replace: leftover })
       }
     })
   }

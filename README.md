@@ -231,6 +231,22 @@ counts as addressed (private chat, `@mention`, `text_mention`, a reply to the bo
 mention stripping, posting and replacing, the edit fallback, the two-step file
 lookup, and the history ring.
 
+## Progress on a slow turn
+
+After `progressAfterMs` (8 seconds by default) a turn posts one message saying it is
+working, and **edits that same message** as tools run — `⏳ 작업 중입니다… — 3개 도구
+(bash) · 41s`. The answer replaces it, so a slow turn leaves one message that changed
+rather than a stale "working on it" plus an answer.
+
+Edits are throttled (`progressUpdateMs`, 2.5s) because every edit is a rate-limited API
+call: the message says roughly what is happening, not every step. A turn that finishes
+quickly shows nothing at all, and a turn whose completion fails still replaces the
+progress message with the failure, so nothing is left claiming to be working.
+
+The rule worth knowing when changing this code lives in `progress.ts`, tested without
+an agent or a platform (`test/progress.test.mjs`, 18 checks): create once, edit after,
+never leave it behind. An orphaned "working on it" is worse than no progress at all.
+
 ## Stopping a running turn
 
 A turn can take minutes, and until now there was no way to interrupt one. Say

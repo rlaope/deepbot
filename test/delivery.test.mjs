@@ -26,7 +26,11 @@ function check(name, ok, detail = '') {
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms))
 
 const posted = []
-let sessionEventHandler = null
+// Faithful to Cordis: a name can have several listeners and every one runs. A stub
+// keeping only the last would pass while a second listener silently disabled the
+// first — which is exactly what happened when the adapter gained a second one.
+let sessionEventHandlers = []
+const sessionEventHandler = (session, event) => { for (const handler of sessionEventHandlers) handler(session, event) }
 
 globalThis.fetch = async (url, init = {}) => {
   const u = String(url)
@@ -58,7 +62,7 @@ writeFileSync(join(stateDir, 'sessions.json'), JSON.stringify({ sessions: { [THR
 const ctx = {
   get: (name) => (name === 'credentials' ? { resolve: async () => undefined } : undefined),
   effect: (fn) => fn(),
-  on: (name, handler) => { if (name === 'session/event') sessionEventHandler = handler; return () => {} },
+  on: (name, handler) => { if (name === 'session/event') sessionEventHandlers.push(handler); return () => {} },
   logger: { info: () => {} },
 }
 

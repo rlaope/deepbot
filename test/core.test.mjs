@@ -154,6 +154,19 @@ function boot({ state = {}, config = {} } = {}) {
   t.done()
 }
 
+// 9b. A finished turn leaves nothing behind to be "stopped".
+{
+  const t = boot()
+  await sleep(60)
+  t.transport.deliver(t.transport.message({ text: 'this turn will fail' }))
+  await sleep(300)
+  t.transport.deliver(t.transport.message({ text: '그만' }))
+  await sleep(250)
+  check('a finished turn is not reported as stoppable', !t.logs.some((l) => /cancelling the running turn/.test(l)), t.logs.filter((l) => /cancelling/.test(l)).join(' | '))
+  check('and the stop request says nothing is running', t.transport.posted.some((p) => /작업이 없습니다/.test(p.text)), JSON.stringify(t.transport.posted.map((p) => p.text.slice(0, 30))))
+  t.done()
+}
+
 // 10. The shapes people actually type are recognised, and nothing else is.
 {
   for (const word of ['중단', 'stop', 'Cancel!', '멈춰']) {
